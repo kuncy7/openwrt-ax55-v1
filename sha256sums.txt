@@ -1,1 +1,1 @@
-338c32a8bbf6d8dbf944cc9de2cb2498ce92ecaf4abd1d9df238f339cafbd45b  openwrt-qualcommax-ipq50xx-tplink_archer-ax55-v1-initramfs-uImage.itb
+12252dd20791b7a077bd0cfd8ae865ab8e69c0f692a8e7c3c66e08b60ea8a564  openwrt-qualcommax-ipq50xx-tplink_archer-ax55-v1-initramfs-uImage.itb
