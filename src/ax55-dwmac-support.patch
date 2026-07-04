@@ -1,0 +1,1116 @@
+diff --git a/package/ax55-testdefaults/Makefile b/package/ax55-testdefaults/Makefile
+new file mode 100644
+index 0000000000..aac21f4db0
+--- /dev/null
++++ b/package/ax55-testdefaults/Makefile
+@@ -0,0 +1,36 @@
++include $(TOPDIR)/rules.mk
++
++PKG_NAME:=ax55-testdefaults
++PKG_VERSION:=2
++PKG_RELEASE:=1
++
++PKG_MAINTAINER:=AX55 port
++PKG_LICENSE:=GPL-2.0-or-later
++
++include $(INCLUDE_DIR)/package.mk
++
++define Package/ax55-testdefaults
++  SECTION:=utils
++  CATEGORY:=Utilities
++  TITLE:=TP-Link Archer AX55 v1 test-build defaults
++  DEPENDS:=@TARGET_qualcommax
++endef
++
++define Package/ax55-testdefaults/description
++  Test-only defaults for the TP-Link Archer AX55 v1 bring-up images: sets the
++  LAN management address to 192.168.1.3, brings every WiFi radio up as a WPA2
++  access point (SSID OpenWrt-AX55), and - since the RTL8367S LAN trunk is not
++  yet verified working - also enables a reachable dropbear/static address on
++  the WAN interface (plain GE PHY, independent of the RTL8367S/HSGMII path),
++  so the board stays reachable even if only WAN link comes up.
++endef
++
++define Build/Compile
++endef
++
++define Package/ax55-testdefaults/install
++	$(INSTALL_DIR) $(1)/etc/uci-defaults
++	$(INSTALL_BIN) ./files/99-ax55-test $(1)/etc/uci-defaults/99-ax55-test
++endef
++
++$(eval $(call BuildPackage,ax55-testdefaults))
+diff --git a/package/ax55-testdefaults/files/99-ax55-test b/package/ax55-testdefaults/files/99-ax55-test
+new file mode 100644
+index 0000000000..87fb213b61
+--- /dev/null
++++ b/package/ax55-testdefaults/files/99-ax55-test
+@@ -0,0 +1,117 @@
++#!/bin/sh
++#
++# TP-Link Archer AX55 v1 - bring-up test defaults.
++#
++# Purpose: keep a freshly booted AX55 reachable during bring-up, over as many
++# independent paths as possible, since the RTL8367S LAN trunk (2.5G HSGMII)
++# is not yet verified working on real hardware:
++#   - LAN management IP -> 192.168.1.3         (via RTL8367S trunk - unverified)
++#   - WAN static IP     -> 192.168.2.3         (plain GE PHY, independent of
++#                                                the RTL8367S/HSGMII path)
++#   - every WiFi radio brought up as a WPA2 AP (SSID OpenWrt-AX55 / needs
++#                                                neither LAN nor WAN to work)
++#
++# This is a TEST helper, not for permanent installs.
++
++WIFI_SSID="OpenWrt-AX55"
++WIFI_KEY="ax55test"        # WPA2 PSK, >= 8 chars
++WIFI_COUNTRY="PL"
++LAN_IP="192.168.1.3"
++WAN_IP="192.168.2.3"
++
++# --- LAN management address -------------------------------------------------
++if ! uci -q get network.lan >/dev/null; then
++	uci -q batch <<-EOF
++		set network.lan=interface
++		set network.lan.proto='static'
++		set network.lan.netmask='255.255.255.0'
++	EOF
++fi
++uci -q batch <<-EOF
++	set network.lan.proto='static'
++	set network.lan.ipaddr='$LAN_IP'
++	set network.lan.netmask='255.255.255.0'
++	delete network.lan.ip6assign
++EOF
++
++# --- WAN test address (independent of the RTL8367S LAN trunk) --------------
++# WAN on this board is the internal GE PHY over plain SGMII - a much simpler,
++# already-mainline datapath than the RTL8367S 2.5G HSGMII trunk. Giving it a
++# static, reachable address (plus a DHCP server, plus a firewall hole) means
++# the board is still reachable over a cable in the WAN port even if the LAN
++# trunk/RTL8367S bring-up is not working yet.
++if ! uci -q get network.wan >/dev/null; then
++	uci -q set network.wan=interface
++fi
++uci -q batch <<-EOF
++	set network.wan.proto='static'
++	set network.wan.ipaddr='$WAN_IP'
++	set network.wan.netmask='255.255.255.0'
++	delete network.wan.ip6assign
++EOF
++
++uci -q batch <<-EOF
++	set dhcp.wan=dhcp
++	set dhcp.wan.interface='wan'
++	set dhcp.wan.start='100'
++	set dhcp.wan.limit='150'
++	set dhcp.wan.leasetime='12h'
++EOF
++
++# Open SSH (dropbear) and ping on the wan firewall zone for this test image -
++# the default template rejects unsolicited input there.
++uci -q batch <<-EOF
++	set firewall.ax55_test_ssh=rule
++	set firewall.ax55_test_ssh.name='ax55-test-allow-ssh-wan'
++	set firewall.ax55_test_ssh.src='wan'
++	set firewall.ax55_test_ssh.proto='tcp'
++	set firewall.ax55_test_ssh.dest_port='22'
++	set firewall.ax55_test_ssh.target='ACCEPT'
++	set firewall.ax55_test_ping=rule
++	set firewall.ax55_test_ping.name='ax55-test-allow-ping-wan'
++	set firewall.ax55_test_ping.src='wan'
++	set firewall.ax55_test_ping.proto='icmp'
++	set firewall.ax55_test_ping.icmp_type='echo-request'
++	set firewall.ax55_test_ping.target='ACCEPT'
++EOF
++
++uci -q commit network
++uci -q commit dhcp
++uci -q commit firewall
++
++# --- WiFi -------------------------------------------------------------------
++# Generate a wireless config from the detected PHYs if one is not present yet
++# (first boot / initramfs), then enable every radio as a WPA2 AP on lan.
++[ -f /etc/config/wireless ] || /sbin/wifi config
++
++. /lib/functions.sh
++config_load wireless
++
++enable_device() {
++	local dev="$1"
++	uci -q set wireless."$dev".disabled='0'
++	uci -q set wireless."$dev".country="$WIFI_COUNTRY"
++}
++
++setup_iface() {
++	local ifc="$1"
++	uci -q set wireless."$ifc".disabled='0'
++	uci -q set wireless."$ifc".mode='ap'
++	uci -q set wireless."$ifc".network='lan'
++	uci -q set wireless."$ifc".encryption='psk2'
++	uci -q set wireless."$ifc".key="$WIFI_KEY"
++	uci -q set wireless."$ifc".ssid="$WIFI_SSID"
++}
++
++config_foreach enable_device wifi-device
++config_foreach setup_iface wifi-iface
++
++uci -q commit wireless
++
++# Apply immediately so LAN/WAN addressing, firewall and the AP are all up
++# without waiting for a reboot.
++/etc/init.d/network reload >/dev/null 2>&1
++/etc/init.d/firewall reload >/dev/null 2>&1
++/sbin/wifi reload >/dev/null 2>&1 &
++
++exit 0
+diff --git a/package/firmware/rtl8367s-sgmii-firmware/Makefile b/package/firmware/rtl8367s-sgmii-firmware/Makefile
+new file mode 100644
+index 0000000000..ae8711f7cf
+--- /dev/null
++++ b/package/firmware/rtl8367s-sgmii-firmware/Makefile
+@@ -0,0 +1,33 @@
++include $(TOPDIR)/rules.mk
++
++PKG_NAME:=rtl8367s-sgmii-firmware
++PKG_RELEASE:=1
++
++PKG_LICENSE:=GPL-2.0
++PKG_LICENSE_FILES:=
++
++include $(INCLUDE_DIR)/package.mk
++
++define Package/rtl8367s-sgmii-firmware
++  SECTION:=firmware
++  CATEGORY:=Firmware
++  TITLE:=Realtek RTL8367S (H)SGMII 8051 firmware
++endef
++
++define Package/rtl8367s-sgmii-firmware/description
++  8051 microcontroller firmware for the RTL8367S SerDes, required to bring up
++  the SGMII/HSGMII extension port. Extracted from the GPL-2.0 mediatek vendor
++  driver (rtl8367c_asicdrv_port.c, Sgmii_Init array) already shipped in
++  OpenWrt's mediatek target.
++endef
++
++define Build/Compile
++endef
++
++define Package/rtl8367s-sgmii-firmware/install
++	$(INSTALL_DIR) $(1)/lib/firmware/rtl_switch
++	$(INSTALL_DATA) ./files/rtl8367s-sgmii.bin \
++		$(1)/lib/firmware/rtl_switch/rtl8367s-sgmii.bin
++endef
++
++$(eval $(call BuildPackage,rtl8367s-sgmii-firmware))
+diff --git a/package/firmware/rtl8367s-sgmii-firmware/files/rtl8367s-sgmii.bin b/package/firmware/rtl8367s-sgmii-firmware/files/rtl8367s-sgmii.bin
+new file mode 100644
+index 0000000000..399d76057d
+Binary files /dev/null and b/package/firmware/rtl8367s-sgmii-firmware/files/rtl8367s-sgmii.bin differ
+diff --git a/target/linux/qualcommax/dts/ipq5018-tplink-archer-ax55-v1.dts b/target/linux/qualcommax/dts/ipq5018-tplink-archer-ax55-v1.dts
+new file mode 100644
+index 0000000000..8c356c474f
+--- /dev/null
++++ b/target/linux/qualcommax/dts/ipq5018-tplink-archer-ax55-v1.dts
+@@ -0,0 +1,448 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++/dts-v1/;
++
++#include "ipq5018.dtsi"
++#include "ipq5018-ess.dtsi"
++#include "ipq5018-qcn6122.dtsi"
++
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
++
++/ {
++	model = "TP-Link Archer AX55 v1";
++	compatible = "tplink,archer-ax55-v1", "qcom,ipq5018";
++
++	aliases {
++		serial0 = &blsp1_uart1;
++		led-boot = &led_power;
++		led-failsafe = &led_power;
++		led-running = &led_power;
++		led-upgrade = &led_power;
++	};
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++		/*
++		 * Stage 3a brings the board up via an initramfs image booted
++		 * from RAM (TFTP); root= is unused for now and is revisited
++		 * with the on-flash layout in stage 3e.
++		 */
++		bootargs-append = " root=/dev/ubiblock0_1 coherent_pool=2M";
++	};
++
++	keys {
++		compatible = "gpio-keys";
++		pinctrl-0 = <&button_pins>;
++		pinctrl-names = "default";
++
++		button-reset {
++			label = "reset";
++			gpios = <&tlmm 25 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++			debounce-interval = <60>;
++		};
++
++		button-wps {
++			label = "wps";
++			gpios = <&tlmm 31 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_WPS_BUTTON>;
++			debounce-interval = <60>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++		pinctrl-0 = <&led_pins>;
++		pinctrl-names = "default";
++
++		/*
++		 * LED GPIOs were derived for stage 3a and still need to be
++		 * confirmed against the real board. NOTE: GPIO39 is the
++		 * RTL8367S reset (OEM reset_gpio), NOT a 5GHz-WLAN LED - the
++		 * 5GHz LED node was removed here and must be re-identified.
++		 */
++		led_power: led-power {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_POWER;
++			gpios = <&tlmm 18 GPIO_ACTIVE_HIGH>;
++		};
++
++		led-lan {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_LAN;
++			gpios = <&tlmm 10 GPIO_ACTIVE_HIGH>;
++		};
++
++		led-wan-green {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_WAN_ONLINE;
++			gpios = <&tlmm 11 GPIO_ACTIVE_HIGH>;
++		};
++
++		led-wan-orange {
++			color = <LED_COLOR_ID_ORANGE>;
++			function = LED_FUNCTION_WAN;
++			gpios = <&tlmm 22 GPIO_ACTIVE_HIGH>;
++		};
++
++		led-wlan2g {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_WLAN_2GHZ;
++			gpios = <&tlmm 13 GPIO_ACTIVE_HIGH>;
++		};
++
++		led-usb {
++			color = <LED_COLOR_ID_GREEN>;
++			function = LED_FUNCTION_USB;
++			gpios = <&tlmm 38 GPIO_ACTIVE_HIGH>;
++		};
++	};
++};
++
++&sleep_clk {
++	clock-frequency = <32000>;
++};
++
++&xo_board_clk {
++	clock-div = <4>;
++	clock-mult = <1>;
++};
++
++&blsp1_uart1 {
++	pinctrl-0 = <&serial_0_pins>;
++	pinctrl-names = "default";
++	status = "okay";
++};
++
++&crypto {
++	status = "okay";
++};
++
++&cryptobam {
++	status = "okay";
++};
++
++&prng {
++	status = "okay";
++};
++
++&qfprom {
++	status = "okay";
++};
++
++&qpic_bam {
++	status = "okay";
++};
++
++&qpic_nand {
++	pinctrl-0 = <&qpic_pins>;
++	pinctrl-names = "default";
++	status = "okay";
++
++	nand@0 {
++		compatible = "spi-nand";
++		reg = <0>;
++
++		nand-ecc-engine = <&qpic_nand>;
++		nand-ecc-strength = <4>;
++		nand-ecc-step-size = <512>;
++		nand-bus-width = <8>;
++
++		/*
++		 * Layout from the stock firmware device tree (OEM
++		 * "IPQ5018/AP-MP03.3"). Dual rootfs (rootfs / rootfs_1);
++		 * the final OpenWrt flashing layout is handled in stage 3e.
++		 */
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "0:SBL1";
++				reg = <0x0 0x80000>;
++				read-only;
++			};
++
++			partition@80000 {
++				label = "0:MIBIB";
++				reg = <0x80000 0x80000>;
++				read-only;
++			};
++
++			partition@100000 {
++				label = "0:BOOTCONFIG";
++				reg = <0x100000 0x40000>;
++				read-only;
++			};
++
++			partition@140000 {
++				label = "0:BOOTCONFIG1";
++				reg = <0x140000 0x40000>;
++				read-only;
++			};
++
++			partition@180000 {
++				label = "0:QSEE";
++				reg = <0x180000 0x100000>;
++				read-only;
++			};
++
++			partition@280000 {
++				label = "0:DEVCFG";
++				reg = <0x280000 0x40000>;
++				read-only;
++			};
++
++			partition@2c0000 {
++				label = "0:CDT";
++				reg = <0x2c0000 0x40000>;
++				read-only;
++			};
++
++			partition@300000 {
++				label = "0:APPSBLENV";
++				reg = <0x300000 0x80000>;
++			};
++
++			partition@380000 {
++				label = "0:APPSBL";
++				reg = <0x380000 0x140000>;
++				read-only;
++			};
++
++			partition@4c0000 {
++				label = "0:ART";
++				reg = <0x4c0000 0x100000>;
++				read-only;
++			};
++
++			partition@5c0000 {
++				label = "0:TRAINING";
++				reg = <0x5c0000 0x80000>;
++				read-only;
++			};
++
++			partition@640000 {
++				label = "rootfs";
++				reg = <0x640000 0x2a00000>;
++			};
++
++			partition@3040000 {
++				label = "rootfs_1";
++				reg = <0x3040000 0x2a00000>;
++			};
++
++			partition@5a40000 {
++				label = "tp_data";
++				reg = <0x5a40000 0x840000>;
++				read-only;
++			};
++
++			partition@6280000 {
++				label = "radio";
++				reg = <0x6280000 0x440000>;
++				read-only;
++			};
++
++			partition@66c0000 {
++				label = "data";
++				reg = <0x66c0000 0x80000>;
++			};
++		};
++	};
++};
++
++/*
++ * ===========================================================================
++ * Stage 3b/3c - Ethernet (kernel 6.12 DWMAC + DSA tree).
++ *
++ *   WAN : IPQ5018 internal GE PHY @ mdio0:7  -> gmac0          (1G SGMII)
++ *   LAN : IPQ5018 MAC1 -> uniphy0 PCS -> 2.5G HSGMII -> gmac1
++ *           -> RTL8367S DSA switch (LAN1-4)                    (2500BASE-X)
++ *
++ * Values confirmed from OEM AX-55.dts + QSDK reference qcom-ipq5018-mp03.3:
++ *   switch_mac_mode 0x0c (SGMII_PLUS), trunk forced 2500, GE PHY @7,
++ *   RTL8367S reset = GPIO39, RTL internal PHYs = mdio1 addr 0..3 (LAN1-4).
++ *
++ * NOTE: the 2.5G trunk only comes up once the rtl8365mb SGMII/HSGMII patch
++ * is applied (rebased onto the split rtl8365mb_* driver of this tree) and
++ * the rtl8367s-sgmii-firmware package is installed.
++ * ===========================================================================
++ */
++
++/* WAN */
++&gmac0 {
++	status = "okay";
++};
++
++&mdio0 {
++	status = "okay";
++};
++
++/* LAN trunk PCS */
++&uniphy0 {
++	status = "okay";
++};
++
++&gmac1 {
++	status = "okay";
++
++	phy-mode = "2500base-x";
++
++	fixed-link {
++		speed = <2500>;
++		full-duplex;
++	};
++};
++
++&mdio1 {
++	status = "okay";
++
++	pinctrl-0 = <&mdio1_pins>;
++	pinctrl-names = "default";
++	reset-gpios = <&tlmm 39 GPIO_ACTIVE_LOW>;
++
++	/*
++	 * RTL8367S (OEM labels it "qca83xx"). MDIO-connected (realtek-mdio).
++	 * reg = switch MDIO address: 29 is the usual RTL8367S value and the
++	 * forum reports it; the QSDK reference uses 28. CONFIRM with an mdio
++	 * scan on real hardware.
++	 */
++	switch@29 {
++		compatible = "realtek,rtl8365mb";
++		reg = <29>;
++
++		ports {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			port@0 {
++				reg = <0>;
++				label = "lan1";
++			};
++
++			port@1 {
++				reg = <1>;
++				label = "lan2";
++			};
++
++			port@2 {
++				reg = <2>;
++				label = "lan3";
++			};
++
++			port@3 {
++				reg = <3>;
++				label = "lan4";
++			};
++
++			port@6 {
++				reg = <6>;
++				label = "cpu";
++				ethernet = <&gmac1>;
++				phy-mode = "2500base-x";
++
++				fixed-link {
++					speed = <2500>;
++					full-duplex;
++				};
++			};
++		};
++	};
++};
++
++/*
++ * ===========================================================================
++ * Stage 3d - WiFi (IPQ5018 2.4 GHz + QCN6122/QCN6102 5 GHz).
++ * GL-B3000 style: 5 GHz radio on UPD ID 3 (q6_wcss_pd3), no boot-args,
++ * so the (board-specific, unexposed) QCN6122 reset GPIO is not needed.
++ * Per-device pre-cal is pulled from 0:ART by the 11-ath11k-caldata hotplug.
++ * ===========================================================================
++ */
++&q6v5_wcss {
++	status = "okay";
++};
++
++&wifi {
++	status = "okay";
++
++	qcom,rproc = <&q6_wcss_pd1>;
++	qcom,userpd-subsys-name = "q6v5_wcss_userpd1";
++	qcom,ath11k-fw-memory-mode = <1>;
++	qcom,bdf-addr = <0x4c400000>;
++};
++
++&wifi1 {
++	status = "okay";
++
++	qcom,rproc = <&q6_wcss_pd3>;
++	qcom,userpd-subsys-name = "q6v5_wcss_userpd3";
++	qcom,ath11k-fw-memory-mode = <1>;
++	qcom,bdf-addr = <0x4d100000>;
++	qcom,m3-dump-addr = <0x4df00000>;
++};
++
++&tlmm {
++	button_pins: button-state {
++		pins = "gpio25", "gpio31";
++		function = "gpio";
++		drive-strength = <8>;
++		bias-pull-up;
++	};
++
++	led_pins: led-state {
++		pins = "gpio10", "gpio11", "gpio13", "gpio18", "gpio22",
++		       "gpio38";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-disable;
++	};
++
++	mdio1_pins: mdio1-state {
++		mdc-pins {
++			pins = "gpio36";
++			function = "mdc";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++
++		mdio-pins {
++			pins = "gpio37";
++			function = "mdio";
++			drive-strength = <8>;
++			bias-pull-up;
++		};
++	};
++
++	qpic_pins: qpic-state {
++		clock-pins {
++			pins = "gpio9";
++			function = "qspi_clk";
++			drive-strength = <8>;
++			bias-disable;
++		};
++
++		cs-pins {
++			pins = "gpio8";
++			function = "qspi_cs";
++			drive-strength = <8>;
++			bias-disable;
++		};
++
++		data-pins {
++			pins = "gpio4", "gpio5", "gpio6", "gpio7";
++			function = "qspi_data";
++			drive-strength = <8>;
++			bias-disable;
++		};
++	};
++
++	serial_0_pins: uart0-state {
++		pins = "gpio20", "gpio21";
++		function = "blsp0_uart0";
++		bias-disable;
++	};
++};
+diff --git a/target/linux/qualcommax/image/ipq50xx.mk b/target/linux/qualcommax/image/ipq50xx.mk
+index c62bb985c7..a18d68c134 100644
+--- a/target/linux/qualcommax/image/ipq50xx.mk
++++ b/target/linux/qualcommax/image/ipq50xx.mk
+@@ -201,6 +201,32 @@ define Device/linksys_spnmx56
+ endef
+ TARGET_DEVICES += linksys_spnmx56
+ 
++define Device/tplink_archer-ax55-v1
++	$(call Device/FitImageLzma)
++	$(call Device/UbiFit)
++	DEVICE_VENDOR := TP-Link
++	DEVICE_MODEL := Archer AX55
++	DEVICE_VARIANT := v1
++	DEVICE_DTS := ipq5018-tplink-archer-ax55-v1
++	DEVICE_DTS_CONFIG := config@mp03.3
++	SOC := ipq5018
++	BLOCKSIZE := 128k
++	PAGESIZE := 2048
++	IMAGE_SIZE := 43008k
++	NAND_SIZE := 128m
++	# Stage 3a/3d: only the initramfs-uImage.itb artifact is used (TFTP boot
++	# from U-Boot). The factory/sysupgrade images are placeholders until the
++	# TP-Link dual-rootfs install path is done in stage 3e.
++	# Stage 3b/3c ethernet: WAN via internal GE PHY (gmac0), LAN via RTL8367S
++	# DSA over the 2.5G HSGMII trunk (gmac1). The trunk needs the rtl8365mb
++	# SGMII/HSGMII patch (rebase pending) + the rtl8367s-sgmii-firmware package.
++	DEVICE_PACKAGES := ath11k-firmware-ipq5018-qcn6122 \
++		kmod-dsa-realtek kmod-dsa-rtl8365mb \
++		rtl8367s-sgmii-firmware \
++		ax55-testdefaults
++endef
++TARGET_DEVICES += tplink_archer-ax55-v1
++
+ define Device/xiaomi_ipq50xx_ax_base
+ 	$(call Device/FitImage)
+ 	$(call Device/UbiFit)
+diff --git a/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/02_network b/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/02_network
+index 7f3c7db25b..876c8fb05d 100644
+--- a/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/02_network
++++ b/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/02_network
+@@ -7,6 +7,19 @@ ipq50xx_setup_interfaces()
+ {
+ 	local board="$1"
+ 	case $board in
++	tplink,archer-ax55-v1)
++		# WAN = gmac0 (plain GE PHY, mainline DWMAC, no RTL8367S involved).
++		# LAN = gmac1 conduit -> RTL8367S DSA (lan1-4). eth0/eth1 assignment
++		# follows the same probe-order convention as cmcc,pz-l8 /
++		# xiaomi,redmi-ax5400 on this SoC family; verify against dmesg on
++		# first successful boot and adjust if the conduit is reversed.
++		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" "wan"
++		ucidef_set_network_device_conduit "lan1" "eth1"
++		ucidef_set_network_device_conduit "lan2" "eth1"
++		ucidef_set_network_device_conduit "lan3" "eth1"
++		ucidef_set_network_device_conduit "lan4" "eth1"
++		ucidef_set_network_device_conduit "wan" "eth0"
++		;;
+ 	elecom,wrc-x3000gs2|\
+ 	elecom,wrc-x3000gst2|\
+ 	iodata,wn-dax3000gr|\
+diff --git a/target/linux/qualcommax/ipq50xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata b/target/linux/qualcommax/ipq50xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+index dbe13c5475..2775b57de0 100644
+--- a/target/linux/qualcommax/ipq50xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
++++ b/target/linux/qualcommax/ipq50xx/base-files/etc/hotplug.d/firmware/11-ath11k-caldata
+@@ -51,6 +51,10 @@ case "$FIRMWARE" in
+ 	xiaomi,redmi-ax5400)
+ 		caldata_extract "0:art" 0x1000 0x20000
+ 		;;
++	tplink,archer-ax55-v1)
++		caldata_extract "0:ART" 0x1000 0x20000
++		ath11k_remove_regdomain
++		;;
+ 	yuncore,ax830|\
+ 	yuncore,ax850)
+ 		caldata_extract "0:ART" 0x1000 0x20000
+@@ -98,6 +102,10 @@ case "$FIRMWARE" in
+ 		ath11k_remove_regdomain
+ 		ath11k_set_macflag
+ 		;;
++	tplink,archer-ax55-v1)
++		caldata_extract "0:ART" 0x26800 0x20000
++		ath11k_remove_regdomain
++		;;
+ 	yuncore,ax830)
+ 		caldata_extract "0:ART" 0x4c000 0x20000
+ 		label_mac=$(mtd_get_mac_binary 0:ART 0)
+diff --git a/target/linux/qualcommax/patches-6.12/0918-net-dsa-realtek-rtl8365mb-add-sgmii-hsgmii-support.patch b/target/linux/qualcommax/patches-6.12/0918-net-dsa-realtek-rtl8365mb-add-sgmii-hsgmii-support.patch
+new file mode 100644
+index 0000000000..e80b1fc99c
+--- /dev/null
++++ b/target/linux/qualcommax/patches-6.12/0918-net-dsa-realtek-rtl8365mb-add-sgmii-hsgmii-support.patch
+@@ -0,0 +1,361 @@
++From: OpenWrt
++Date: Thu, 4 Jun 2026 00:00:00 +0200
++Subject: [PATCH] net: dsa: realtek: rtl8365mb: add SGMII and HSGMII support
++
++The mainline rtl8365mb driver only configures RGMII on the extension
++interface, so switches such as the RTL8367S that are connected to the SoC
++over a (2.5G) SGMII/HSGMII link cannot be brought up (phylink_mac_config
++is a no-op for non-RGMII and SGMII/2500BASEX are not advertised).
++
++Add SGMII and HSGMII (advertised as 2500BASE-X) support for extension
++interface 1. The SerDes calibration sequences and the 8051 init firmware
++are taken verbatim from the GPL-2.0 Realtek vendor driver that already
++lives in OpenWrt's mediatek target
++(rtl8367c_setAsicPortExtMode / Sgmii_Init). The firmware is shipped as
++rtl_switch/rtl8367s-sgmii.bin by the rtl8367s-sgmii-firmware package.
++
++This is a re-derivation of Hauke Mehrtens' 2022 netdev series, which was
++never merged due to the firmware-blob licensing situation that does not
++apply within OpenWrt.
++
++Needed for the TP-Link Archer AX55 v1 (IPQ5018 + RTL8367S, 2.5G HSGMII).
++
++Signed-off-by: OpenWrt <noreply@openwrt.org>
++---
++--- a/drivers/net/dsa/realtek/rtl8365mb.c
+++++ b/drivers/net/dsa/realtek/rtl8365mb.c
++@@ -97,6 +97,7 @@
++ #include <linux/mutex.h>
++ #include <linux/of_irq.h>
++ #include <linux/regmap.h>
+++#include <linux/firmware.h>
++ #include <linux/if_bridge.h>
++ #include <linux/if_vlan.h>
++ 
++@@ -207,6 +208,34 @@
++ #define RTL8365MB_EXT_PORT_MODE_1000X_100FX	11
++ #define RTL8365MB_EXT_PORT_MODE_1000X		12
++ #define RTL8365MB_EXT_PORT_MODE_100FX		13
+++/* Registers used to bring up the (H)SGMII extension interface. The
+++ * RTL8365MB_MAGIC_REG/RTL8365MB_MAGIC_VALUE, RTL8365MB_CHIP_VER_REG and
+++ * RTL8365MB_CHIP_RESET_REG defines already exist above and are reused here.
+++ */
+++#define RTL8365MB_OPTION_MAGIC_REG		0x13C0
+++#define RTL8365MB_OPTION_REG			0x13C1
+++
+++#define RTL8365MB_MISC_CFG0_REG			0x130C
+++#define   RTL8365MB_MISC_CFG0_DW8051_EN_MASK	0x0020
+++
+++#define   RTL8365MB_CHIP_RESET_DW8051_MASK	0x0010
+++
+++#define RTL8365MB_DW8051_RDY_REG		0x1336
+++#define   RTL8365MB_DW8051_RDY_ACS_IROM_MASK	0x0002
+++#define   RTL8365MB_DW8051_RDY_IROM_MSB_MASK	0x0004
+++#define RTL8365MB_DW8051_IRAM_BASE		0xE000
+++
+++#define RTL8365MB_SDS_MISC_REG			0x1D11
+++#define   RTL8365MB_SDS_MISC_MAC8_SGMII_MASK	0x0040
+++#define   RTL8365MB_SDS_MISC_MAC8_HSGMII_MASK	0x0800
+++
+++#define RTL8365MB_SDS_INDACS_CMD_REG		0x6600
+++#define   RTL8365MB_SDS_INDACS_CMD_WRITE	0x00C0
+++#define RTL8365MB_SDS_INDACS_ADR_REG		0x6601
+++#define RTL8365MB_SDS_INDACS_DATA_REG		0x6602
+++
+++/* SerDes init firmware executed by the switch's integrated 8051 */
+++#define RTL8365MB_SGMII_FW_NAME "rtl_switch/rtl8367s-sgmii.bin"
++ 
++ /* External interface mode configuration registers 0~1 */
++ #define RTL8365MB_DIGITAL_INTERFACE_SELECT_REG0		0x1305 /* EXT0,EXT1 */
++@@ -984,7 +1013,7 @@
++ 		r_rx_pause = rx_pause ? 1 : 0;
++ 		r_tx_pause = tx_pause ? 1 : 0;
++ 
++-		if (speed == SPEED_1000) {
+++		if (speed == SPEED_2500 || speed == SPEED_1000) {
++ 			r_speed = RTL8365MB_PORT_SPEED_1000M;
++ 		} else if (speed == SPEED_100) {
++ 			r_speed = RTL8365MB_PORT_SPEED_100M;
++@@ -1032,6 +1061,221 @@
++ 	return 0;
++ }
++ 
+++/* (H)SGMII SerDes calibration tables, taken verbatim from the GPL-2.0 Realtek
+++ * vendor driver (rtl8367c_setAsicPortExtMode); each entry is a {data, addr}
+++ * pair written through the SerDes indirect-access registers.
+++ */
+++static const u16 rtl8365mb_sds_sgmii[][2] = {
+++	{ 0x04D7, 0x0480 }, { 0xF994, 0x0481 }, { 0x21A2, 0x0482 },
+++	{ 0x6960, 0x0483 }, { 0x9728, 0x0484 }, { 0x9D85, 0x0423 },
+++	{ 0xD810, 0x0424 }, { 0x83F2, 0x002E },
+++};
+++
+++static const u16 rtl8365mb_sds_sgmii_sb[][2] = {
+++	{ 0x04D7, 0x0480 }, { 0xF994, 0x0481 }, { 0x31A2, 0x0482 },
+++	{ 0x6960, 0x0483 }, { 0x9728, 0x0484 }, { 0x9D85, 0x0423 },
+++	{ 0xD810, 0x0424 }, { 0x83F2, 0x002E },
+++};
+++
+++static const u16 rtl8365mb_sds_hsgmii_1[][2] = {
+++	{ 0x82F1, 0x0500 }, { 0xF195, 0x0501 }, { 0x31A2, 0x0502 },
+++	{ 0x796C, 0x0503 }, { 0x9728, 0x0504 }, { 0x9D85, 0x0423 },
+++	{ 0xD810, 0x0424 }, { 0x0F80, 0x0001 }, { 0x83F2, 0x002E },
+++};
+++
+++static const u16 rtl8365mb_sds_hsgmii_8[][2] = {
+++	{ 0x82F1, 0x0500 }, { 0xF995, 0x0501 }, { 0x31A2, 0x0502 },
+++	{ 0x796C, 0x0503 }, { 0x9728, 0x0504 }, { 0x9D85, 0x0423 },
+++	{ 0xD810, 0x0424 }, { 0x0F80, 0x0001 }, { 0x83F2, 0x002E },
+++};
+++
+++static const u16 rtl8365mb_sds_hsgmii_hb[][2] = {
+++	{ 0x82F0, 0x0500 }, { 0xF195, 0x0501 }, { 0x31A2, 0x0502 },
+++	{ 0x7960, 0x0503 }, { 0x9728, 0x0504 }, { 0x9D85, 0x0423 },
+++	{ 0xD810, 0x0424 }, { 0x0F80, 0x0001 }, { 0x83F2, 0x002E },
+++};
+++
+++static int rtl8365mb_sds_indacs_write(struct realtek_priv *priv, u16 data,
+++				      u16 addr)
+++{
+++	int ret;
+++
+++	ret = regmap_write(priv->map, RTL8365MB_SDS_INDACS_DATA_REG, data);
+++	if (ret)
+++		return ret;
+++
+++	ret = regmap_write(priv->map, RTL8365MB_SDS_INDACS_ADR_REG, addr);
+++	if (ret)
+++		return ret;
+++
+++	return regmap_write(priv->map, RTL8365MB_SDS_INDACS_CMD_REG,
+++			    RTL8365MB_SDS_INDACS_CMD_WRITE);
+++}
+++
+++static int rtl8365mb_ext_load_sgmii_fw(struct realtek_priv *priv)
+++{
+++	const struct firmware *fw;
+++	size_t i;
+++	int ret;
+++
+++	ret = request_firmware(&fw, RTL8365MB_SGMII_FW_NAME, priv->dev);
+++	if (ret) {
+++		dev_err(priv->dev, "failed to load firmware %s: %d\n",
+++			RTL8365MB_SGMII_FW_NAME, ret);
+++		return ret;
+++	}
+++
+++	/* Hold the 8051 in reset, enable it and open the instruction RAM */
+++	ret = regmap_update_bits(priv->map, RTL8365MB_CHIP_RESET_REG,
+++				 RTL8365MB_CHIP_RESET_DW8051_MASK,
+++				 RTL8365MB_CHIP_RESET_DW8051_MASK);
+++	if (ret)
+++		goto out;
+++	ret = regmap_update_bits(priv->map, RTL8365MB_MISC_CFG0_REG,
+++				 RTL8365MB_MISC_CFG0_DW8051_EN_MASK,
+++				 RTL8365MB_MISC_CFG0_DW8051_EN_MASK);
+++	if (ret)
+++		goto out;
+++	ret = regmap_update_bits(priv->map, RTL8365MB_DW8051_RDY_REG,
+++				 RTL8365MB_DW8051_RDY_ACS_IROM_MASK,
+++				 RTL8365MB_DW8051_RDY_ACS_IROM_MASK);
+++	if (ret)
+++		goto out;
+++	ret = regmap_update_bits(priv->map, RTL8365MB_DW8051_RDY_REG,
+++				 RTL8365MB_DW8051_RDY_IROM_MSB_MASK, 0);
+++	if (ret)
+++		goto out;
+++
+++	for (i = 0; i < fw->size; i++) {
+++		ret = regmap_write(priv->map,
+++				   RTL8365MB_DW8051_IRAM_BASE + i, fw->data[i]);
+++		if (ret)
+++			goto out;
+++	}
+++
+++	/* Close the instruction RAM and release the 8051 */
+++	ret = regmap_update_bits(priv->map, RTL8365MB_DW8051_RDY_REG,
+++				 RTL8365MB_DW8051_RDY_IROM_MSB_MASK, 0);
+++	if (ret)
+++		goto out;
+++	ret = regmap_update_bits(priv->map, RTL8365MB_DW8051_RDY_REG,
+++				 RTL8365MB_DW8051_RDY_ACS_IROM_MASK, 0);
+++	if (ret)
+++		goto out;
+++	ret = regmap_update_bits(priv->map, RTL8365MB_CHIP_RESET_REG,
+++				 RTL8365MB_CHIP_RESET_DW8051_MASK, 0);
+++out:
+++	release_firmware(fw);
+++	return ret;
+++}
+++
+++static int rtl8365mb_ext_config_sgmii(struct realtek_priv *priv, int port,
+++				      phy_interface_t interface)
+++{
+++	const struct rtl8365mb_extint *extint =
+++		rtl8365mb_get_port_extint(priv, port);
+++	bool hsgmii = interface == PHY_INTERFACE_MODE_2500BASEX;
+++	const u16 (*red)[2];
+++	u32 chipver, option;
+++	size_t red_cnt;
+++	int ret;
+++	size_t i;
+++	u32 mode;
+++
+++	if (!extint)
+++		return -ENODEV;
+++
+++	/* (H)SGMII is only available on extension interface 1 */
+++	if (extint->id != 1)
+++		return -EOPNOTSUPP;
+++
+++	/* Read the chip "option" (magic-unlocked) to pick the SerDes table */
+++	ret = regmap_write(priv->map, RTL8365MB_OPTION_MAGIC_REG,
+++			   RTL8365MB_MAGIC_VALUE);
+++	if (ret)
+++		return ret;
+++	ret = regmap_read(priv->map, RTL8365MB_OPTION_REG, &option);
+++	if (ret)
+++		return ret;
+++	ret = regmap_write(priv->map, RTL8365MB_OPTION_MAGIC_REG, 0);
+++	if (ret)
+++		return ret;
+++
+++	if (!hsgmii) {
+++		red = option ? rtl8365mb_sds_sgmii_sb : rtl8365mb_sds_sgmii;
+++		red_cnt = ARRAY_SIZE(rtl8365mb_sds_sgmii);
+++	} else if (option == 0) {
+++		ret = regmap_write(priv->map, RTL8365MB_MAGIC_REG,
+++				   RTL8365MB_MAGIC_VALUE);
+++		if (ret)
+++			return ret;
+++		ret = regmap_read(priv->map, RTL8365MB_CHIP_VER_REG, &chipver);
+++		if (ret)
+++			return ret;
+++		ret = regmap_write(priv->map, RTL8365MB_MAGIC_REG, 0);
+++		if (ret)
+++			return ret;
+++
+++		switch ((chipver & 0x00F0) >> 4) {
+++		case 1:
+++		case 5:
+++		case 6:
+++			red = rtl8365mb_sds_hsgmii_1;
+++			break;
+++		case 8:
+++		case 9:
+++			red = rtl8365mb_sds_hsgmii_8;
+++			break;
+++		default:
+++			/* RTL8367S rev 0x00A0 (AX55) lands here */
+++			red = rtl8365mb_sds_hsgmii_hb;
+++			break;
+++		}
+++		red_cnt = ARRAY_SIZE(rtl8365mb_sds_hsgmii_hb);
+++	} else {
+++		dev_err(priv->dev,
+++			"HSGMII with chip option %u is not supported\n", option);
+++		return -EOPNOTSUPP;
+++	}
+++
+++	for (i = 0; i < red_cnt; i++) {
+++		ret = rtl8365mb_sds_indacs_write(priv, red[i][0], red[i][1]);
+++		if (ret)
+++			return ret;
+++	}
+++
+++	/* Select SGMII or HSGMII on the MAC8 SerDes mux */
+++	ret = regmap_update_bits(priv->map, RTL8365MB_SDS_MISC_REG,
+++				 RTL8365MB_SDS_MISC_MAC8_SGMII_MASK,
+++				 hsgmii ? 0 : RTL8365MB_SDS_MISC_MAC8_SGMII_MASK);
+++	if (ret)
+++		return ret;
+++	ret = regmap_update_bits(priv->map, RTL8365MB_SDS_MISC_REG,
+++				 RTL8365MB_SDS_MISC_MAC8_HSGMII_MASK,
+++				 hsgmii ? RTL8365MB_SDS_MISC_MAC8_HSGMII_MASK : 0);
+++	if (ret)
+++		return ret;
+++
+++	/* Set the extension-interface mode */
+++	mode = hsgmii ? RTL8365MB_EXT_PORT_MODE_HSGMII :
+++			RTL8365MB_EXT_PORT_MODE_SGMII;
+++	ret = regmap_update_bits(
+++		priv->map, RTL8365MB_DIGITAL_INTERFACE_SELECT_REG(extint->id),
+++		RTL8365MB_DIGITAL_INTERFACE_SELECT_MODE_MASK(extint->id),
+++		mode << RTL8365MB_DIGITAL_INTERFACE_SELECT_MODE_OFFSET(
+++			       extint->id));
+++	if (ret)
+++		return ret;
+++
+++	/* "SerDes not reset" poke from the vendor driver */
+++	ret = rtl8365mb_sds_indacs_write(priv, 0x7106, 0x0003);
+++	if (ret)
+++		return ret;
+++
+++	/* Finally load the 8051 SerDes firmware */
+++	return rtl8365mb_ext_load_sgmii_fw(priv);
+++}
+++
++ static void rtl8365mb_phylink_get_caps(struct dsa_switch *ds, int port,
++ 				       struct phylink_config *config)
++ {
++@@ -1060,6 +1304,15 @@
++ 
++ 	if (extint->supported_interfaces & RTL8365MB_PHY_INTERFACE_MODE_RGMII)
++ 		phy_interface_set_rgmii(config->supported_interfaces);
+++	if (extint->supported_interfaces & RTL8365MB_PHY_INTERFACE_MODE_SGMII)
+++		__set_bit(PHY_INTERFACE_MODE_SGMII,
+++			  config->supported_interfaces);
+++
+++	if (extint->supported_interfaces & RTL8365MB_PHY_INTERFACE_MODE_HSGMII) {
+++		__set_bit(PHY_INTERFACE_MODE_2500BASEX,
+++			  config->supported_interfaces);
+++		config->mac_capabilities |= MAC_2500FD;
+++	}
++ }
++ 
++ static void rtl8365mb_phylink_mac_config(struct phylink_config *config,
++@@ -1087,6 +1340,15 @@
++ 		return;
++ 	}
++ 
+++	if (state->interface == PHY_INTERFACE_MODE_SGMII ||
+++	    state->interface == PHY_INTERFACE_MODE_2500BASEX) {
+++		ret = rtl8365mb_ext_config_sgmii(priv, port, state->interface);
+++		if (ret)
+++			dev_err(priv->dev,
+++				"failed to configure SGMII mode on port %d: %d\n",
+++				port, ret);
+++		return;
+++	}
++ 	/* TODO: Implement MII and RMII modes, which the RTL8365MB-VC also
++ 	 * supports
++ 	 */
++@@ -1107,7 +1369,9 @@
++ 	p = &mb->ports[port];
++ 	cancel_delayed_work_sync(&p->mib_work);
++ 
++-	if (phy_interface_mode_is_rgmii(interface)) {
+++	if (phy_interface_mode_is_rgmii(interface) ||
+++	    interface == PHY_INTERFACE_MODE_SGMII ||
+++	    interface == PHY_INTERFACE_MODE_2500BASEX) {
++ 		ret = rtl8365mb_ext_config_forcemode(priv, port, false, 0, 0,
++ 						     false, false);
++ 		if (ret)
++@@ -1137,7 +1401,9 @@
++ 	p = &mb->ports[port];
++ 	schedule_delayed_work(&p->mib_work, 0);
++ 
++-	if (phy_interface_mode_is_rgmii(interface)) {
+++	if (phy_interface_mode_is_rgmii(interface) ||
+++	    interface == PHY_INTERFACE_MODE_SGMII ||
+++	    interface == PHY_INTERFACE_MODE_2500BASEX) {
++ 		ret = rtl8365mb_ext_config_forcemode(priv, port, true, speed,
++ 						     duplex, tx_pause,
++ 						     rx_pause);
++@@ -2218,5 +2484,6 @@
++ 
++ MODULE_AUTHOR("Alvin Šipraga <alsi@bang-olufsen.dk>");
++ MODULE_DESCRIPTION("Driver for RTL8365MB-VC ethernet switch");
+++MODULE_FIRMWARE(RTL8365MB_SGMII_FW_NAME);
++ MODULE_LICENSE("GPL");
++ MODULE_IMPORT_NS(REALTEK_DSA);
