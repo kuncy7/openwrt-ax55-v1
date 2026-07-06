@@ -1,7 +1,7 @@
 From 7557958141d1a0d7dc8d2eb31d37cc5330f70ccd Mon Sep 17 00:00:00 2001
 From: Stacho_P <stacho@venco.com.pl>
 Date: Sat, 4 Jul 2026 12:45:08 +0200
-Subject: [PATCH 1/2] qualcommax: add TP-Link Archer AX55 v1 (IPQ5018) on
+Subject: [PATCH 1/3] qualcommax: add TP-Link Archer AX55 v1 (IPQ5018) on
  DWMAC+DSA base
 
 Based on Julius's pcs-uniphy-psgmii-25m (kernel 6.12.92, mainline-aimed
@@ -1179,7 +1179,7 @@ index 0000000000..e80b1fc99c
 From 0418a0d98343c87d1a8aa86acb1ad3f2a1ed3b5e Mon Sep 17 00:00:00 2001
 From: Stacho_P <stacho@venco.com.pl>
 Date: Mon, 6 Jul 2026 19:54:40 +0200
-Subject: [PATCH 2/2] qualcommax: archer-ax55-v1: LAN works - 2.5G HSGMII trunk
+Subject: [PATCH 2/3] qualcommax: archer-ax55-v1: LAN works - 2.5G HSGMII trunk
  passes traffic
 
 The RTL8367S<->IPQ5018 trunk (SGMII 1G and HSGMII 2.5G) now passes
@@ -3680,6 +3680,402 @@ index 0000000000..457298fb28
 + #ifdef REGMAP_ALLOW_WRITE_DEBUGFS
 + /*
 +  * This can be dangerous especially when we have clients such as
+-- 
+2.43.0
+
+
+From ed9065e5562a1a9e88b92e160abdb9632b766891 Mon Sep 17 00:00:00 2001
+From: Stacho_P <stacho@venco.com.pl>
+Date: Mon, 6 Jul 2026 21:42:29 +0200
+Subject: [PATCH 3/3] qualcommax: archer-ax55-v1: WAN + factory MACs + all 5
+ ports - full router
+
+WAN mystery solved by per-jack PHY mapping on hardware: the IPQ5018
+internal GE PHY is not bonded out on this board. All five front jacks
+are RTL8367S internal PHYs: blue WAN jack = phy0, LAN1-4 = phy1-4.
+Label the switch ports accordingly (wan/lan1-lan4, new port@4), disable
+gmac0, and let the DSA conduit take the eth0 name.
+
+Factory MACs come from the 6-byte default-mac file inside the tp_data
+UBI volume (label MAC = lan, +1 wan, +2/+3 radios), read by a small
+helper that attaches/mounts the volume read-only once per boot.
+
+Also:
+- uboot-envtools: add archer-ax55-v1 (env in 0:APPSBLENV, 256K/128K x2)
+- ax55-testdefaults v5: WAN is a normal DHCP client now (drop the old
+  static-recovery address), WiFi AP MACs set on the wifi-iface
+- drop the regmap-debugfs write patch and /dev/mem (bring-up aids)
+
+Verified end-to-end on hardware: cold boot -> WAN DHCP + NAT + IPv6,
+4x LAN + WiFi with sticker MACs, 2.5G trunk.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+---
+ package/ax55-testdefaults/Makefile            | 16 +++---
+ package/ax55-testdefaults/files/20-ax55-macs  | 19 +++++++
+ package/ax55-testdefaults/files/25-ax55-wifi  | 18 +++++++
+ package/ax55-testdefaults/files/99-ax55-test  | 27 ++--------
+ package/ax55-testdefaults/files/read-ax55-mac | 28 ++++++++++
+ .../uboot-envtools/files/qualcommax_ipq50xx   |  2 +-
+ .../dts/ipq5018-tplink-archer-ax55-v1.dts     | 53 +++++++++++++------
+ .../ipq50xx/base-files/etc/board.d/02_network |  8 ++-
+ .../0919-regmap-debugfs-allow-writes.patch    | 24 ---------
+ 9 files changed, 117 insertions(+), 78 deletions(-)
+ create mode 100644 package/ax55-testdefaults/files/20-ax55-macs
+ create mode 100644 package/ax55-testdefaults/files/read-ax55-mac
+ delete mode 100644 target/linux/qualcommax/patches-6.12/0919-regmap-debugfs-allow-writes.patch
+
+diff --git a/package/ax55-testdefaults/Makefile b/package/ax55-testdefaults/Makefile
+index 511a7ed033..0417e2353e 100644
+--- a/package/ax55-testdefaults/Makefile
++++ b/package/ax55-testdefaults/Makefile
+@@ -1,7 +1,7 @@
+ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=ax55-testdefaults
+-PKG_VERSION:=3
++PKG_VERSION:=5
+ PKG_RELEASE:=1
+ 
+ PKG_MAINTAINER:=AX55 port
+@@ -17,12 +17,11 @@ define Package/ax55-testdefaults
+ endef
+ 
+ define Package/ax55-testdefaults/description
+-  Test-only defaults for the TP-Link Archer AX55 v1 bring-up images: sets the
+-  LAN management address to 192.168.1.3, brings every WiFi radio up as a WPA2
+-  access point (SSID OpenWrt-AX55), and - since the RTL8367S LAN trunk is not
+-  yet verified working - also enables a reachable dropbear/static address on
+-  the WAN interface (plain GE PHY, independent of the RTL8367S/HSGMII path),
+-  so the board stays reachable even if only WAN link comes up.
++  Defaults for the TP-Link Archer AX55 v1 images: factory MACs from the
++  tp_data UBI volume (label MAC on lan, +1 wan, +2/+3 radios), LAN management
++  address 192.168.1.3, every WiFi radio up as a WPA2 access point (SSID
++  OpenWrt-AX55) so a freshly flashed board is reachable without serial, WAN
++  as a normal DHCP client, and (dev builds) ssh/ping allowed from wan.
+ endef
+ 
+ define Build/Compile
+@@ -31,8 +30,11 @@ endef
+ define Package/ax55-testdefaults/install
+ 	$(INSTALL_DIR) $(1)/etc/uci-defaults
+ 	$(INSTALL_BIN) ./files/99-ax55-test $(1)/etc/uci-defaults/99-ax55-test
++	$(INSTALL_BIN) ./files/20-ax55-macs $(1)/etc/uci-defaults/20-ax55-macs
+ 	$(INSTALL_DIR) $(1)/etc/hotplug.d/ieee80211
+ 	$(INSTALL_BIN) ./files/25-ax55-wifi $(1)/etc/hotplug.d/ieee80211/25-ax55-wifi
++	$(INSTALL_DIR) $(1)/lib
++	$(INSTALL_BIN) ./files/read-ax55-mac $(1)/lib/read-ax55-mac
+ endef
+ 
+ $(eval $(call BuildPackage,ax55-testdefaults))
+diff --git a/package/ax55-testdefaults/files/20-ax55-macs b/package/ax55-testdefaults/files/20-ax55-macs
+new file mode 100644
+index 0000000000..f03afed03d
+--- /dev/null
++++ b/package/ax55-testdefaults/files/20-ax55-macs
+@@ -0,0 +1,19 @@
++#!/bin/sh
++# Set the factory MACs from tp_data/default-mac (= the label MAC, OUI
++# a8:6e:84 on the AX55). Convention: lan/label = base MAC, wan = base+1.
++# WiFi MACs are handled in the ieee80211 hotplug script (25-ax55-wifi).
++
++. /lib/functions.sh
++. /lib/functions/system.sh
++
++[ "$(board_name)" = "tplink,archer-ax55-v1" ] || exit 0
++
++mac="$(/lib/read-ax55-mac)" || exit 0
++[ -n "$mac" ] || exit 0
++
++uci -q batch <<-EOF
++	set network.@device[0].macaddr='$mac'
++	set network.wan.macaddr='$(macaddr_add "$mac" 1)'
++	commit network
++EOF
++exit 0
+diff --git a/package/ax55-testdefaults/files/25-ax55-wifi b/package/ax55-testdefaults/files/25-ax55-wifi
+index 1a9bd30047..dfb3fbd4c1 100644
+--- a/package/ax55-testdefaults/files/25-ax55-wifi
++++ b/package/ax55-testdefaults/files/25-ax55-wifi
+@@ -15,16 +15,34 @@ WIFI_KEY="ax55test"
+ WIFI_COUNTRY="PL"
+ 
+ . /lib/functions.sh
++. /lib/functions/system.sh
+ config_load wireless
+ 
++# factory MACs for the radios: base+2 (2.4 GHz/phy0), base+3 (5 GHz/phy1)
++BASE_MAC="$(/lib/read-ax55-mac 2>/dev/null)"
++
+ enable_device() {
+ 	uci -q set wireless."$1".disabled='0'
+ 	uci -q set wireless."$1".country="$WIFI_COUNTRY"
+ }
+ 
+ setup_iface() {
++	local dev off
+ 	uci -q set wireless."$1".disabled='0'
+ 	uci -q set wireless."$1".mode='ap'
++	# factory MAC for the AP: base+2 (radio0/2.4G), base+3 (radio1/5G).
++	# NB: this must be set on the wifi-iface - the wifi-device "macaddr"
++	# option is a radio-identification key in mac80211, not a setter.
++	if [ -n "$BASE_MAC" ]; then
++		dev=$(uci -q get wireless."$1".device)
++		case "$dev" in
++		*0) off=2 ;;
++		*1) off=3 ;;
++		*) off="" ;;
++		esac
++		[ -n "$off" ] && \
++			uci -q set wireless."$1".macaddr="$(macaddr_add "$BASE_MAC" $off)"
++	fi
+ 	uci -q set wireless."$1".network='lan'
+ 	uci -q set wireless."$1".encryption='psk2'
+ 	uci -q set wireless."$1".key="$WIFI_KEY"
+diff --git a/package/ax55-testdefaults/files/99-ax55-test b/package/ax55-testdefaults/files/99-ax55-test
+index f51e78483f..a8c364b277 100644
+--- a/package/ax55-testdefaults/files/99-ax55-test
++++ b/package/ax55-testdefaults/files/99-ax55-test
+@@ -17,7 +17,6 @@ WIFI_SSID="OpenWrt-AX55"
+ WIFI_KEY="ax55test"        # WPA2 PSK, >= 8 chars
+ WIFI_COUNTRY="PL"
+ LAN_IP="192.168.1.3"
+-WAN_IP="192.168.2.3"
+ 
+ # --- LAN management address -------------------------------------------------
+ if ! uci -q get network.lan >/dev/null; then
+@@ -34,29 +33,9 @@ uci -q batch <<-EOF
+ 	delete network.lan.ip6assign
+ EOF
+ 
+-# --- WAN test address (independent of the RTL8367S LAN trunk) --------------
+-# WAN on this board is the internal GE PHY over plain SGMII - a much simpler,
+-# already-mainline datapath than the RTL8367S 2.5G HSGMII trunk. Giving it a
+-# static, reachable address (plus a DHCP server, plus a firewall hole) means
+-# the board is still reachable over a cable in the WAN port even if the LAN
+-# trunk/RTL8367S bring-up is not working yet.
+-if ! uci -q get network.wan >/dev/null; then
+-	uci -q set network.wan=interface
+-fi
+-uci -q batch <<-EOF
+-	set network.wan.proto='static'
+-	set network.wan.ipaddr='$WAN_IP'
+-	set network.wan.netmask='255.255.255.0'
+-	delete network.wan.ip6assign
+-EOF
+-
+-uci -q batch <<-EOF
+-	set dhcp.wan=dhcp
+-	set dhcp.wan.interface='wan'
+-	set dhcp.wan.start='100'
+-	set dhcp.wan.limit='150'
+-	set dhcp.wan.leasetime='12h'
+-EOF
++# --- WAN --------------------------------------------------------------------
++# The blue WAN jack is RTL8367S port 0 ("wan" DSA port). Normal router
++# behaviour: DHCP client (board.d default already sets this - nothing to do).
+ 
+ # Open SSH (dropbear) and ping on the wan firewall zone for this test image -
+ # the default template rejects unsolicited input there.
+diff --git a/package/ax55-testdefaults/files/read-ax55-mac b/package/ax55-testdefaults/files/read-ax55-mac
+new file mode 100644
+index 0000000000..7e3431d17d
+--- /dev/null
++++ b/package/ax55-testdefaults/files/read-ax55-mac
+@@ -0,0 +1,28 @@
++#!/bin/sh
++# Read the 6-byte factory MAC from the "default-mac" file inside the TP-Link
++# tp_data UBI volume. Prints aa:bb:cc:dd:ee:ff on stdout. Cached in /tmp so
++# the UBI attach/detach dance runs at most once per boot.
++
++CACHE=/tmp/.ax55-default-mac
++[ -s "$CACHE" ] && { cat "$CACHE"; exit 0; }
++
++. /lib/functions.sh
++
++idx=$(find_mtd_index tp_data)
++[ -n "$idx" ] || exit 1
++
++ubi=$(ubiattach -m "$idx" 2>/dev/null | sed -n 's/.*device number \([0-9]*\).*/\1/p')
++[ -n "$ubi" ] || exit 1
++
++mkdir -p /tmp/.tp_data
++mac=""
++if mount -t ubifs -o ro "/dev/ubi${ubi}_0" /tmp/.tp_data 2>/dev/null; then
++	[ -s /tmp/.tp_data/default-mac ] && \
++		mac=$(hexdump -v -n6 -e '5/1 "%02x:" 1/1 "%02x"' /tmp/.tp_data/default-mac)
++	umount /tmp/.tp_data
++fi
++ubidetach -m "$idx" 2>/dev/null
++
++[ -n "$mac" ] || exit 1
++echo "$mac" > "$CACHE"
++echo "$mac"
+diff --git a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq50xx b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq50xx
+index 95f0e314d4..583dcac1db 100644
+--- a/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq50xx
++++ b/package/boot/uboot-tools/uboot-envtools/files/qualcommax_ipq50xx
+@@ -16,7 +16,7 @@ iodata,wn-dax3000gr|\
+ zyxel,scr50axe)
+ 	ubootenv_add_mtd "0:appsblenv" "0x0" "0x40000" "0x20000"
+ 	;;
+-glinet,gl-b3000)
++glinet,gl-b3000|tplink,archer-ax55-v1)
+ 	ubootenv_add_mtd "0:APPSBLENV" "0x0" "0x40000" "0x20000"
+ 	;;
+ linksys,mr5500|\
+diff --git a/target/linux/qualcommax/dts/ipq5018-tplink-archer-ax55-v1.dts b/target/linux/qualcommax/dts/ipq5018-tplink-archer-ax55-v1.dts
+index 7476306b5d..5d8f490449 100644
+--- a/target/linux/qualcommax/dts/ipq5018-tplink-archer-ax55-v1.dts
++++ b/target/linux/qualcommax/dts/ipq5018-tplink-archer-ax55-v1.dts
+@@ -257,25 +257,28 @@
+ 
+ /*
+  * ===========================================================================
+- * Stage 3b/3c - Ethernet (kernel 6.12 DWMAC + DSA tree).
++ * Ethernet (kernel 6.12 DWMAC + DSA, all verified on hardware 2026-07-06).
+  *
+- *   WAN : IPQ5018 internal GE PHY @ mdio0:7  -> gmac0          (1G SGMII)
+- *   LAN : IPQ5018 MAC1 -> uniphy0 PCS -> 2.5G HSGMII -> gmac1
+- *           -> RTL8367S DSA switch (LAN1-4)                    (2500BASE-X)
++ *   IPQ5018 gmac1 -> uniphy0 PCS -> 2.5G HSGMII trunk -> RTL8367S DSA switch
++ *   All FIVE front jacks are RTL8367S internal PHYs:
++ *     blue WAN = phy0 ("wan"), LAN1-4 = phy1-4 ("lan1".."lan4")
++ *   The SoC's internal GE PHY (mdio0:7/gmac0) is NOT bonded out -> disabled.
+  *
+- * Values confirmed from OEM AX-55.dts + QSDK reference qcom-ipq5018-mp03.3:
+- *   switch_mac_mode 0x0c (SGMII_PLUS), trunk forced 2500, GE PHY @7,
+- *   RTL8367S reset = GPIO39, RTL internal PHYs = mdio1 addr 0..3 (LAN1-4).
+- *
+- * NOTE: the 2.5G trunk only comes up once the rtl8365mb SGMII/HSGMII patch
+- * is applied (rebased onto the split rtl8365mb_* driver of this tree) and
+- * the rtl8367s-sgmii-firmware package is installed.
++ *   RTL8367S: MDIO addr 29 on mdio1, reset GPIO 33 (the OEM DTS's "GPIO39"
++ *   is wrong/unused). Requires the rtl8365mb SGMII/HSGMII patch (0918) +
++ *   rtl8367s-sgmii-firmware. Stock runs the trunk at 1G SGMII; 2.5G HSGMII
++ *   verified working with this driver.
+  * ===========================================================================
+  */
+ 
+-/* WAN */
++/*
++ * The IPQ5018 internal GE PHY (mdio0 addr 7 / gmac0) is NOT wired to any
++ * jack on this board: all five front jacks (blue "WAN" + LAN1-4) hang off
++ * the RTL8367S's five internal PHYs (verified per-jack on hardware, see
++ * the switch ports below). Keep gmac0 disabled.
++ */
+ &gmac0 {
+-	status = "okay";
++	status = "disabled";
+ };
+ 
+ &mdio0 {
+@@ -342,36 +345,52 @@
+ 			switchphy3: ethernet-phy@3 {
+ 				reg = <3>;
+ 			};
++
++			switchphy4: ethernet-phy@4 {
++				reg = <4>;
++			};
+ 		};
+ 
+ 		ports {
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+ 
++			/*
++			 * Physical jack -> switch PHY map (verified per-jack):
++			 * blue WAN = phy0, LAN1 = phy1, LAN2 = phy2,
++			 * LAN3 = phy3, LAN4 = phy4. The SoC's internal GE PHY
++			 * is not bonded out.
++			 */
+ 			port@0 {
+ 				reg = <0>;
+-				label = "lan1";
++				label = "wan";
+ 				phy-handle = <&switchphy0>;
+ 			};
+ 
+ 			port@1 {
+ 				reg = <1>;
+-				label = "lan2";
++				label = "lan1";
+ 				phy-handle = <&switchphy1>;
+ 			};
+ 
+ 			port@2 {
+ 				reg = <2>;
+-				label = "lan3";
++				label = "lan2";
+ 				phy-handle = <&switchphy2>;
+ 			};
+ 
+ 			port@3 {
+ 				reg = <3>;
+-				label = "lan4";
++				label = "lan3";
+ 				phy-handle = <&switchphy3>;
+ 			};
+ 
++			port@4 {
++				reg = <4>;
++				label = "lan4";
++				phy-handle = <&switchphy4>;
++			};
++
+ 			port@6 {
+ 				reg = <6>;
+ 				label = "cpu";
+diff --git a/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/02_network b/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/02_network
+index 876c8fb05d..1c06a247b5 100644
+--- a/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/02_network
++++ b/target/linux/qualcommax/ipq50xx/base-files/etc/board.d/02_network
+@@ -8,11 +8,9 @@ ipq50xx_setup_interfaces()
+ 	local board="$1"
+ 	case $board in
+ 	tplink,archer-ax55-v1)
+-		# WAN = gmac0 (plain GE PHY, mainline DWMAC, no RTL8367S involved).
+-		# LAN = gmac1 conduit -> RTL8367S DSA (lan1-4). eth0/eth1 assignment
+-		# follows the same probe-order convention as cmcc,pz-l8 /
+-		# xiaomi,redmi-ax5400 on this SoC family; verify against dmesg on
+-		# first successful boot and adjust if the conduit is reversed.
++		# All five jacks are RTL8367S switch ports behind the gmac1
++		# DSA conduit: blue WAN jack = port0 ("wan"), LAN1-4 =
++		# ports1-4. The SoC's internal GE PHY is not bonded out.
+ 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" "wan"
+ 		ucidef_set_network_device_conduit "lan1" "eth1"
+ 		ucidef_set_network_device_conduit "lan2" "eth1"
+diff --git a/target/linux/qualcommax/patches-6.12/0919-regmap-debugfs-allow-writes.patch b/target/linux/qualcommax/patches-6.12/0919-regmap-debugfs-allow-writes.patch
+deleted file mode 100644
+index 457298fb28..0000000000
+--- a/target/linux/qualcommax/patches-6.12/0919-regmap-debugfs-allow-writes.patch
++++ /dev/null
+@@ -1,24 +0,0 @@
+-From: OpenWrt
+-Date: Mon, 6 Jul 2026 00:00:00 +0200
+-Subject: [PATCH] regmap: debugfs: allow register writes (AX55 bring-up aid)
+-
+-Turn the intentionally source-only REGMAP_ALLOW_WRITE_DEBUGFS switch on so
+-the RTL8367S switch registers (regmap over MDIO) can be poked live from
+-userspace via /sys/kernel/debug/regmap/*/registers during the AX55
+-SGMII-trunk bring-up. Development aid only - drop before upstreaming.
+-
+-Write syntax: echo "<reg> <value>" > .../registers (hex, no 0x).
+-
+-Signed-off-by: OpenWrt <noreply@openwrt.org>
+----
+---- a/drivers/base/regmap/regmap-debugfs.c
+-+++ b/drivers/base/regmap/regmap-debugfs.c
+-@@ -290,7 +290,7 @@ static ssize_t regmap_map_read_file(stru
+- 				   count, ppos);
+- }
+-
+--#undef REGMAP_ALLOW_WRITE_DEBUGFS
+-+#define REGMAP_ALLOW_WRITE_DEBUGFS
+- #ifdef REGMAP_ALLOW_WRITE_DEBUGFS
+- /*
+-  * This can be dangerous especially when we have clients such as
 -- 
 2.43.0
 

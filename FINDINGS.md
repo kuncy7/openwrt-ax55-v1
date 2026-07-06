@@ -102,6 +102,24 @@ Hard-won debugging facts:
   (`switch_mac_mode 0x0c` = SGMII_CHANNEL0; live `ssdk_sh port speed get 2` →
   1000). 2.5G HSGMII works fine with this driver — a free upgrade over stock.
 
+## WAN / port mapping — SOLVED (2026-07-06)
+
+The IPQ5018's internal GE PHY (mdio0 addr 7) is **not bonded out** on the
+AX55: it probes fine (clocks, resets, TCSR LDO all OK) but its AFE goes
+nowhere. All five front jacks are the RTL8367S's five internal PHYs,
+verified jack-by-jack with a BMSR logger: **blue WAN = phy0, LAN1-4 =
+phy1-4** (phy4 ships powered-down — BMCR 0x1940 — because no port used it;
+that was the "dead LAN4 jack"). So "WAN" is simply switch port 0.
+
+Factory MACs live in the **`default-mac` file (6 raw bytes) inside the
+`tp_data` UBI volume** (label MAC = lan, +1 wan, +2/+3 radios). tp_data also
+carries `product-info`, `device-id`, certificates etc.
+
+Useful trick: RTL8367S PHY registers can be read/written from userspace via
+the switch INDIRECT_ACCESS regs (0x1F00-0x1F04 + OCP prefix in 0x1D15,
+ocp_addr = 0xA400 + 2*reg) — that is how the per-jack mapping and the phy4
+power-down were found without any serial console.
+
 ## (historical) RTL8367S / HSGMII — the open datapath problem
 - WAN (`switch_wan_bmp=0x00`) never touches the RTL switch: it is the IPQ5018 internal
   GE PHY @ mdio0:7 on `gmac0`. WAN and WiFi are therefore independent of the RTL8367S

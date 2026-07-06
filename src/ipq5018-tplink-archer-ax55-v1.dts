@@ -257,25 +257,28 @@
 
 /*
  * ===========================================================================
- * Stage 3b/3c - Ethernet (kernel 6.12 DWMAC + DSA tree).
+ * Ethernet (kernel 6.12 DWMAC + DSA, all verified on hardware 2026-07-06).
  *
- *   WAN : IPQ5018 internal GE PHY @ mdio0:7  -> gmac0          (1G SGMII)
- *   LAN : IPQ5018 MAC1 -> uniphy0 PCS -> 2.5G HSGMII -> gmac1
- *           -> RTL8367S DSA switch (LAN1-4)                    (2500BASE-X)
+ *   IPQ5018 gmac1 -> uniphy0 PCS -> 2.5G HSGMII trunk -> RTL8367S DSA switch
+ *   All FIVE front jacks are RTL8367S internal PHYs:
+ *     blue WAN = phy0 ("wan"), LAN1-4 = phy1-4 ("lan1".."lan4")
+ *   The SoC's internal GE PHY (mdio0:7/gmac0) is NOT bonded out -> disabled.
  *
- * Values confirmed from OEM AX-55.dts + QSDK reference qcom-ipq5018-mp03.3:
- *   switch_mac_mode 0x0c (SGMII_PLUS), trunk forced 2500, GE PHY @7,
- *   RTL8367S reset = GPIO39, RTL internal PHYs = mdio1 addr 0..3 (LAN1-4).
- *
- * NOTE: the 2.5G trunk only comes up once the rtl8365mb SGMII/HSGMII patch
- * is applied (rebased onto the split rtl8365mb_* driver of this tree) and
- * the rtl8367s-sgmii-firmware package is installed.
+ *   RTL8367S: MDIO addr 29 on mdio1, reset GPIO 33 (the OEM DTS's "GPIO39"
+ *   is wrong/unused). Requires the rtl8365mb SGMII/HSGMII patch (0918) +
+ *   rtl8367s-sgmii-firmware. Stock runs the trunk at 1G SGMII; 2.5G HSGMII
+ *   verified working with this driver.
  * ===========================================================================
  */
 
-/* WAN */
+/*
+ * The IPQ5018 internal GE PHY (mdio0 addr 7 / gmac0) is NOT wired to any
+ * jack on this board: all five front jacks (blue "WAN" + LAN1-4) hang off
+ * the RTL8367S's five internal PHYs (verified per-jack on hardware, see
+ * the switch ports below). Keep gmac0 disabled.
+ */
 &gmac0 {
-	status = "okay";
+	status = "disabled";
 };
 
 &mdio0 {
@@ -342,34 +345,50 @@
 			switchphy3: ethernet-phy@3 {
 				reg = <3>;
 			};
+
+			switchphy4: ethernet-phy@4 {
+				reg = <4>;
+			};
 		};
 
 		ports {
 			#address-cells = <1>;
 			#size-cells = <0>;
 
+			/*
+			 * Physical jack -> switch PHY map (verified per-jack):
+			 * blue WAN = phy0, LAN1 = phy1, LAN2 = phy2,
+			 * LAN3 = phy3, LAN4 = phy4. The SoC's internal GE PHY
+			 * is not bonded out.
+			 */
 			port@0 {
 				reg = <0>;
-				label = "lan1";
+				label = "wan";
 				phy-handle = <&switchphy0>;
 			};
 
 			port@1 {
 				reg = <1>;
-				label = "lan2";
+				label = "lan1";
 				phy-handle = <&switchphy1>;
 			};
 
 			port@2 {
 				reg = <2>;
-				label = "lan3";
+				label = "lan2";
 				phy-handle = <&switchphy2>;
 			};
 
 			port@3 {
 				reg = <3>;
-				label = "lan4";
+				label = "lan3";
 				phy-handle = <&switchphy3>;
+			};
+
+			port@4 {
+				reg = <4>;
+				label = "lan4";
+				phy-handle = <&switchphy4>;
 			};
 
 			port@6 {

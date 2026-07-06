@@ -19,16 +19,22 @@ Forum thread: https://forum.openwrt.org/t/add-support-for-tp-link-ax55-v1/158384
   lacks. This repo carries a rebased version of Hauke Mehrtens' 2022 patch
   (`src/0918-*.patch`) plus the 8051 SerDes firmware (`rtl8367s-sgmii-firmware`).
 
-## Status (2026-07-06)
+## Status (2026-07-06, v0.5)
 | Area | State |
 |---|---|
 | Builds (initramfs + factory.ubi + sysupgrade) | ✅ clean on 6.12.92 |
 | No-serial install to NAND (`mtd write`) | ✅ works (see below) |
 | Boots to userspace | ✅ |
 | WiFi 2.4 GHz + 5 GHz (ath11k, own BDFs) | ✅ AP works, clients get DHCP |
-| **LAN: RTL8367S ↔ SoC trunk passes traffic** | ✅ **WORKS — both 1G SGMII and 2.5G HSGMII, from cold boot** |
-| WAN (IPQ5018 internal GE PHY) | ❌ next up (PHY confirmed alive on stock) |
-| MAC from ART / port-label mapping / cleanups | ⏳ pending |
+| **LAN: RTL8367S ↔ SoC trunk** | ✅ **2.5G HSGMII, from cold boot** |
+| **WAN + NAT + internet** | ✅ **works — the blue jack is RTL8367S port 0** |
+| All 5 jacks mapped + labeled correctly | ✅ (wan + lan1-4; GE PHY is not bonded out) |
+| Factory MACs (label/wan/radios from tp_data) | ✅ |
+| U-Boot env tools (fw_printenv/fw_setenv) | ✅ |
+
+**This is a fully functional router now** — WAN DHCP + NAT + IPv6, 4×1G LAN,
+WiFi 2.4+5 GHz, 2.5G internal trunk (faster than stock, which runs it at 1G).
+The whole port was done **without ever soldering a serial console**.
 
 **2026-07-06: the LAN datapath is solved.** Two `rtl8365mb` driver pieces were
 missing, and **both are required** — each alone leaves a link-up trunk that
