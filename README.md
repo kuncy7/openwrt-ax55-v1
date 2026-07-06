@@ -19,21 +19,31 @@ Forum thread: https://forum.openwrt.org/t/add-support-for-tp-link-ax55-v1/158384
   lacks. This repo carries a rebased version of Hauke Mehrtens' 2022 patch
   (`src/0918-*.patch`) plus the 8051 SerDes firmware (`rtl8367s-sgmii-firmware`).
 
-## Status (2026-07-04)
+## Status (2026-07-06)
 | Area | State |
 |---|---|
 | Builds (initramfs + factory.ubi + sysupgrade) | ✅ clean on 6.12.92 |
-| `rtl8365mb` HSGMII patch 0918 | ✅ applies + compiles in-tree |
 | No-serial install to NAND (`mtd write`) | ✅ works (see below) |
-| Boots the FIT (U-Boot loads slot, no fallback) | ✅ (indirect) |
-| Reaches userspace / network | ❓ **unconfirmed — no serial console** |
-| RTL8367S LAN trunk passes traffic | ❌ open problem (SerDes/MDIO) |
+| Boots to userspace | ✅ |
+| WiFi 2.4 GHz + 5 GHz (ath11k, own BDFs) | ✅ AP works, clients get DHCP |
+| **LAN: RTL8367S ↔ SoC trunk passes traffic** | ✅ **WORKS — both 1G SGMII and 2.5G HSGMII, from cold boot** |
+| WAN (IPQ5018 internal GE PHY) | ❌ next up (PHY confirmed alive on stock) |
+| MAC from ART / port-label mapping / cleanups | ⏳ pending |
 
-**We flashed the image via the no-serial path and the router did NOT come up on
-WiFi, WAN or LAN.** U-Boot did *not* fall back to stock (192.168.0.1 stays dead),
-so the FIT loaded but the kernel either panics early or boots with no usable
-interface. **Without a serial console we cannot see why.** Boot-log help wanted —
-see the forum thread and `FINDINGS.md`.
+**2026-07-06: the LAN datapath is solved.** Two `rtl8365mb` driver pieces were
+missing, and **both are required** — each alone leaves a link-up trunk that
+silently drops every frame in both directions:
+1. **Disable SGMII in-band autoneg in the SerDes** (SDS reg `0x0002`: clear bit 9,
+   set bit 8 = commit; vendor `rtl8367c_setSgmiiNway`, with the switch's 8051
+   paused via `0x130C` bit 5 around the access).
+2. **Force link/speed/duplex/pause in `SDS_MISC` (`0x1D11`) from `mac_link_up`**
+   (vendor `setAsicPortForceLinkExt`, type-1 chips) — bit 9 of `SDS_MISC`
+   directly gates the SerDes TX.
+
+Debug notes that cost us days (see `FINDINGS.md`): never dump the full switch
+regmap over MDIO (it wedges the MDIO slave until a power cycle), and the 8051
+firmware polls the SDS status register through the same INDACS engine your
+accesses use — pause it first.
 
 ## Build
 ```sh

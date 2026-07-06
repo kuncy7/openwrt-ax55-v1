@@ -68,7 +68,41 @@ mtd7  0:APPSBLENV   0x080000     mtd15 data          0x080000
 Result: FIT loads (no U-Boot fallback), but no WiFi/WAN/LAN came up. **Needs a serial
 boot log to diagnose (panic vs. booted-but-no-interface).**
 
-## RTL8367S / HSGMII — the open datapath problem
+## RTL8367S / (H)SGMII — SOLVED (2026-07-06)
+
+The trunk (1G SGMII *and* 2.5G HSGMII) passes traffic from cold boot with two
+additions to the `rtl8365mb` SGMII patch — **both mandatory**, each alone gives
+a "link up, zero frames either way" trunk:
+
+1. **SerDes SGMII in-band autoneg must be disabled** (both trunk ends are
+   fixed-link/forced, AN never completes, the SerDes drops everything).
+   Vendor `rtl8367c_setSgmiiNway`: pause the 8051 (`0x130C` bit 5 = 0) →
+   INDACS read SDS reg `0x0002` (ADR `0x6601`, CMD `0x6600`=`0x0080`, DATA
+   `0x6602`) → clear bit 9, set bit 8 (commit) → INDACS write (CMD `0x00C0`)
+   → resume the 8051.
+2. **`SDS_MISC` (`0x1D11`) force bits written from `mac_link_up`** — vendor
+   `setAsicPortForceLinkExt` type-1: FDUP bit 10, LINK bit 9, SPD bits 8:7
+   (+RXFC bit 14/TXFC bit 13). **Bit 9 directly gates the SerDes TX** — with
+   everything else configured perfectly the trunk stays silent until it's set.
+
+Hard-won debugging facts:
+- **Never `cat`/`grep` the full regmap debugfs `registers` file of this switch**
+  — dumping the whole register space over MDIO wedges the RTL8367S MDIO slave
+  (all reads return 0) until a hard power cycle. Read single registers by
+  offset (`dd bs=11 skip=$((0xREG)) count=1`).
+- The 8051 SerDes firmware **continuously polls SDS status reg `0x3D` through
+  the same INDACS engine** — host INDACS accesses race it and lose. Pause the
+  8051 (`0x130C` bit 5) around every INDACS access, like the vendor does.
+- SDS status reg `0x3D`: bit 8 = SignalDetect, bit 0 = Sync, bit 4 = Link.
+- SDS reg `0x0000` = `0x1403` normal operation; vendor `rtl8367c_sdsReset`
+  pulses `0x1401` → `0x1403`.
+- The uniphy CH_STS register with FORCE_MODE cleared is NOT a valid
+  "peer TX alive" probe (part of the RX path stops when unforced).
+- The stock TP-Link firmware runs this trunk at **1G SGMII**
+  (`switch_mac_mode 0x0c` = SGMII_CHANNEL0; live `ssdk_sh port speed get 2` →
+  1000). 2.5G HSGMII works fine with this driver — a free upgrade over stock.
+
+## (historical) RTL8367S / HSGMII — the open datapath problem
 - WAN (`switch_wan_bmp=0x00`) never touches the RTL switch: it is the IPQ5018 internal
   GE PHY @ mdio0:7 on `gmac0`. WAN and WiFi are therefore independent of the RTL8367S
   and are the intended out-of-band bring-up channels.

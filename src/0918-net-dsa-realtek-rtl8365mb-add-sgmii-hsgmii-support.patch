@@ -18,7 +18,11 @@ This is a re-derivation of Hauke Mehrtens' 2022 netdev series, which was
 never merged due to the firmware-blob licensing situation that does not
 apply within OpenWrt.
 
-Needed for the TP-Link Archer AX55 v1 (IPQ5018 + RTL8367S, 2.5G HSGMII).
+The SDS_MISC force bits (link/speed/duplex/pause) and the SGMII in-band
+autoneg disable are both mandatory - each alone leaves a link-up trunk
+that passes no traffic (verified live on AX55 hardware).
+
+Needed for the TP-Link Archer AX55 v1 (IPQ5018 + RTL8367S).
 
 Signed-off-by: OpenWrt <noreply@openwrt.org>
 ---
@@ -32,7 +36,7 @@ Signed-off-by: OpenWrt <noreply@openwrt.org>
  #include <linux/if_bridge.h>
  #include <linux/if_vlan.h>
  
-@@ -207,6 +208,34 @@
+@@ -207,6 +208,40 @@
  #define RTL8365MB_EXT_PORT_MODE_1000X_100FX	11
  #define RTL8365MB_EXT_PORT_MODE_1000X		12
  #define RTL8365MB_EXT_PORT_MODE_100FX		13
@@ -56,9 +60,15 @@ Signed-off-by: OpenWrt <noreply@openwrt.org>
 +#define RTL8365MB_SDS_MISC_REG			0x1D11
 +#define   RTL8365MB_SDS_MISC_MAC8_SGMII_MASK	0x0040
 +#define   RTL8365MB_SDS_MISC_MAC8_HSGMII_MASK	0x0800
++#define   RTL8365MB_SDS_MISC_SGMII_RXFC_MASK	0x4000
++#define   RTL8365MB_SDS_MISC_SGMII_TXFC_MASK	0x2000
++#define   RTL8365MB_SDS_MISC_SGMII_FDUP_MASK	0x0400
++#define   RTL8365MB_SDS_MISC_SGMII_LINK_MASK	0x0200
++#define   RTL8365MB_SDS_MISC_SGMII_SPD_MASK	0x0180
 +
 +#define RTL8365MB_SDS_INDACS_CMD_REG		0x6600
 +#define   RTL8365MB_SDS_INDACS_CMD_WRITE	0x00C0
++#define   RTL8365MB_SDS_INDACS_CMD_READ		0x0080
 +#define RTL8365MB_SDS_INDACS_ADR_REG		0x6601
 +#define RTL8365MB_SDS_INDACS_DATA_REG		0x6602
 +
@@ -67,7 +77,15 @@ Signed-off-by: OpenWrt <noreply@openwrt.org>
  
  /* External interface mode configuration registers 0~1 */
  #define RTL8365MB_DIGITAL_INTERFACE_SELECT_REG0		0x1305 /* EXT0,EXT1 */
-@@ -984,7 +1013,7 @@
+@@ -962,6 +997,7 @@
+ }
+ 
+ static int rtl8365mb_ext_config_forcemode(struct realtek_priv *priv, int port,
++					  phy_interface_t interface,
+ 					  bool link, int speed, int duplex,
+ 					  bool tx_pause, bool rx_pause)
+ {
+@@ -984,7 +1020,7 @@
  		r_rx_pause = rx_pause ? 1 : 0;
  		r_tx_pause = tx_pause ? 1 : 0;
  
@@ -76,10 +94,42 @@ Signed-off-by: OpenWrt <noreply@openwrt.org>
  			r_speed = RTL8365MB_PORT_SPEED_1000M;
  		} else if (speed == SPEED_100) {
  			r_speed = RTL8365MB_PORT_SPEED_100M;
-@@ -1032,6 +1061,221 @@
- 	return 0;
- }
+@@ -1029,6 +1065,346 @@
+ 	if (ret)
+ 		return ret;
  
++	/*
++	 * For the SGMII/HSGMII extension interface the digital-interface
++	 * force register above is not enough: the SerDes MAC link (speed/
++	 * duplex/link/pause) must also be forced in the SDS_MISC register,
++	 * exactly as the vendor rtl8367c setAsicPortForceLinkExt() does for
++	 * ext id 1. Without this the link is reported up but the trunk
++	 * passes no traffic in either direction (verified live on the AX55:
++	 * setting the LINK bit by hand instantly brought DHCP up).
++	 */
++	if (interface == PHY_INTERFACE_MODE_SGMII ||
++	    interface == PHY_INTERFACE_MODE_2500BASEX) {
++		u32 sds_mask = RTL8365MB_SDS_MISC_SGMII_RXFC_MASK |
++			       RTL8365MB_SDS_MISC_SGMII_TXFC_MASK |
++			       RTL8365MB_SDS_MISC_SGMII_FDUP_MASK |
++			       RTL8365MB_SDS_MISC_SGMII_LINK_MASK |
++			       RTL8365MB_SDS_MISC_SGMII_SPD_MASK;
++		u32 sds_val =
++			FIELD_PREP(RTL8365MB_SDS_MISC_SGMII_RXFC_MASK, r_rx_pause) |
++			FIELD_PREP(RTL8365MB_SDS_MISC_SGMII_TXFC_MASK, r_tx_pause) |
++			FIELD_PREP(RTL8365MB_SDS_MISC_SGMII_FDUP_MASK, r_duplex) |
++			FIELD_PREP(RTL8365MB_SDS_MISC_SGMII_LINK_MASK, r_link) |
++			FIELD_PREP(RTL8365MB_SDS_MISC_SGMII_SPD_MASK, r_speed);
++
++		ret = regmap_update_bits(priv->map, RTL8365MB_SDS_MISC_REG,
++					 sds_mask, sds_val);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++
 +/* (H)SGMII SerDes calibration tables, taken verbatim from the GPL-2.0 Realtek
 + * vendor driver (rtl8367c_setAsicPortExtMode); each entry is a {data, addr}
 + * pair written through the SerDes indirect-access registers.
@@ -129,6 +179,75 @@ Signed-off-by: OpenWrt <noreply@openwrt.org>
 +
 +	return regmap_write(priv->map, RTL8365MB_SDS_INDACS_CMD_REG,
 +			    RTL8365MB_SDS_INDACS_CMD_WRITE);
++}
++
++static int rtl8365mb_sds_indacs_read(struct realtek_priv *priv, u16 addr,
++				     u32 *data)
++{
++	int ret;
++
++	ret = regmap_write(priv->map, RTL8365MB_SDS_INDACS_ADR_REG, addr);
++	if (ret)
++		return ret;
++
++	ret = regmap_write(priv->map, RTL8365MB_SDS_INDACS_CMD_REG,
++			   RTL8365MB_SDS_INDACS_CMD_READ);
++	if (ret)
++		return ret;
++
++	return regmap_read(priv->map, RTL8365MB_SDS_INDACS_DATA_REG, data);
++}
++
++/*
++ * Enable/disable SGMII in-band autonegotiation in the SerDes (SDS reg
++ * 0x0002 bit 9, bit 8 = commit) - vendor rtl8367c_setSgmiiNway(). The
++ * SerDes powers up with autoneg ENABLED; on a fixed-link trunk both MACs
++ * are forced, the handshake never completes and the SerDes silently
++ * drops every frame in both directions while the forced link still
++ * reports "up". The vendor driver calls
++ * rtk_port_sgmiiNway_set(..., DISABLED) right after forcing the
++ * ext-port link. The 8051 is paused around the read-modify-write,
++ * exactly as the vendor does (0x130C bit 5 = DW8051_EN).
++ */
++static int rtl8365mb_ext_sgmii_nway(struct realtek_priv *priv, bool enable)
++{
++	u32 running, val;
++	int ret, err;
++
++	ret = regmap_read(priv->map, RTL8365MB_MISC_CFG0_REG, &running);
++	if (ret)
++		return ret;
++	running &= RTL8365MB_MISC_CFG0_DW8051_EN_MASK;
++
++	if (running) {
++		ret = regmap_update_bits(priv->map, RTL8365MB_MISC_CFG0_REG,
++					 RTL8365MB_MISC_CFG0_DW8051_EN_MASK, 0);
++		if (ret)
++			return ret;
++	}
++
++	ret = rtl8365mb_sds_indacs_read(priv, 0x0002, &val);
++	if (ret)
++		goto out;
++
++	if (enable)
++		val |= 0x0200;
++	else
++		val &= ~0x0200;
++	val |= 0x0100;
++
++	ret = rtl8365mb_sds_indacs_write(priv, val, 0x0002);
++
++out:
++	if (running) {
++		err = regmap_update_bits(priv->map, RTL8365MB_MISC_CFG0_REG,
++					 RTL8365MB_MISC_CFG0_DW8051_EN_MASK,
++					 RTL8365MB_MISC_CFG0_DW8051_EN_MASK);
++		if (!ret)
++			ret = err;
++	}
++
++	return ret;
 +}
 +
 +static int rtl8365mb_ext_load_sgmii_fw(struct realtek_priv *priv)
@@ -208,6 +327,15 @@ Signed-off-by: OpenWrt <noreply@openwrt.org>
 +	if (extint->id != 1)
 +		return -EOPNOTSUPP;
 +
++	/*
++	 * Clear the per-ext-port "bypass line rate" bit (reg 0x03F7). The
++	 * vendor rtl8367c driver does this first; leaving it set brings the
++	 * HSGMII trunk link up but stops it passing traffic.
++	 */
++	ret = regmap_update_bits(priv->map, 0x03F7, BIT(extint->id), 0);
++	if (ret)
++		return ret;
++
 +	/* Read the chip "option" (magic-unlocked) to pick the SerDes table */
 +	ret = regmap_write(priv->map, RTL8365MB_OPTION_MAGIC_REG,
 +			   RTL8365MB_MAGIC_VALUE);
@@ -223,7 +351,15 @@ Signed-off-by: OpenWrt <noreply@openwrt.org>
 +	if (!hsgmii) {
 +		red = option ? rtl8365mb_sds_sgmii_sb : rtl8365mb_sds_sgmii;
 +		red_cnt = ARRAY_SIZE(rtl8365mb_sds_sgmii);
-+	} else if (option == 0) {
++	} else {
++		/*
++		 * HSGMII: pick the SerDes table by chip VERSION, not by the
++		 * "option" bin. The AX55's RTL8367S reports option 1 but is
++		 * the same 0x00A0 part, so treat every option like option 0
++		 * (select by chipver) instead of bailing out - bailing left
++		 * the trunk SerDes unconfigured (no table, no 8051 firmware)
++		 * so the switch<->CPU datapath was dead in the RX direction.
++		 */
 +		ret = regmap_write(priv->map, RTL8365MB_MAGIC_REG,
 +				   RTL8365MB_MAGIC_VALUE);
 +		if (ret)
@@ -251,10 +387,6 @@ Signed-off-by: OpenWrt <noreply@openwrt.org>
 +			break;
 +		}
 +		red_cnt = ARRAY_SIZE(rtl8365mb_sds_hsgmii_hb);
-+	} else {
-+		dev_err(priv->dev,
-+			"HSGMII with chip option %u is not supported\n", option);
-+		return -EOPNOTSUPP;
 +	}
 +
 +	for (i = 0; i < red_cnt; i++) {
@@ -292,13 +424,24 @@ Signed-off-by: OpenWrt <noreply@openwrt.org>
 +		return ret;
 +
 +	/* Finally load the 8051 SerDes firmware */
-+	return rtl8365mb_ext_load_sgmii_fw(priv);
-+}
++	ret = rtl8365mb_ext_load_sgmii_fw(priv);
++	if (ret)
++		return ret;
 +
- static void rtl8365mb_phylink_get_caps(struct dsa_switch *ds, int port,
- 				       struct phylink_config *config)
- {
-@@ -1060,6 +1304,15 @@
++	/*
++	 * Kill SGMII in-band autoneg in the SerDes: both trunk ends are
++	 * fixed-link/forced, AN would never complete and the SerDes drops
++	 * all traffic in both directions. Done while the 8051 is running
++	 * (pause/resume inside), exactly like the vendor flow.
++	 */
++	ret = rtl8365mb_ext_sgmii_nway(priv, false);
++	if (ret)
++		return ret;
++
+ 	return 0;
+ }
+ 
+@@ -1060,6 +1436,15 @@
  
  	if (extint->supported_interfaces & RTL8365MB_PHY_INTERFACE_MODE_RGMII)
  		phy_interface_set_rgmii(config->supported_interfaces);
@@ -314,7 +457,7 @@ Signed-off-by: OpenWrt <noreply@openwrt.org>
  }
  
  static void rtl8365mb_phylink_mac_config(struct phylink_config *config,
-@@ -1087,6 +1340,15 @@
+@@ -1087,6 +1472,15 @@
  		return;
  	}
  
@@ -330,29 +473,35 @@ Signed-off-by: OpenWrt <noreply@openwrt.org>
  	/* TODO: Implement MII and RMII modes, which the RTL8365MB-VC also
  	 * supports
  	 */
-@@ -1107,7 +1369,9 @@
+@@ -1107,8 +1501,11 @@
  	p = &mb->ports[port];
  	cancel_delayed_work_sync(&p->mib_work);
  
 -	if (phy_interface_mode_is_rgmii(interface)) {
+-		ret = rtl8365mb_ext_config_forcemode(priv, port, false, 0, 0,
 +	if (phy_interface_mode_is_rgmii(interface) ||
 +	    interface == PHY_INTERFACE_MODE_SGMII ||
 +	    interface == PHY_INTERFACE_MODE_2500BASEX) {
- 		ret = rtl8365mb_ext_config_forcemode(priv, port, false, 0, 0,
++		ret = rtl8365mb_ext_config_forcemode(priv, port, interface,
++						     false, 0, 0,
  						     false, false);
  		if (ret)
-@@ -1137,7 +1401,9 @@
+ 			dev_err(priv->dev,
+@@ -1137,8 +1534,11 @@
  	p = &mb->ports[port];
  	schedule_delayed_work(&p->mib_work, 0);
  
 -	if (phy_interface_mode_is_rgmii(interface)) {
+-		ret = rtl8365mb_ext_config_forcemode(priv, port, true, speed,
 +	if (phy_interface_mode_is_rgmii(interface) ||
 +	    interface == PHY_INTERFACE_MODE_SGMII ||
 +	    interface == PHY_INTERFACE_MODE_2500BASEX) {
- 		ret = rtl8365mb_ext_config_forcemode(priv, port, true, speed,
++		ret = rtl8365mb_ext_config_forcemode(priv, port, interface,
++						     true, speed,
  						     duplex, tx_pause,
  						     rx_pause);
-@@ -2218,5 +2484,6 @@
+ 		if (ret)
+@@ -2218,5 +2618,6 @@
  
  MODULE_AUTHOR("Alvin Šipraga <alsi@bang-olufsen.dk>");
  MODULE_DESCRIPTION("Driver for RTL8365MB-VC ethernet switch");
