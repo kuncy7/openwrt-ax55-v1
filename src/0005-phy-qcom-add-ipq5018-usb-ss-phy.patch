@@ -1,0 +1,200 @@
+From: Stanisław Pal <kuncy7@gmail.com>
+Date: Tue, 7 Jul 2026 14:00:00 +0200
+Subject: [PATCH] phy: qcom: add IPQ5018 USB SuperSpeed uni PHY driver
+
+Port of the QSDK phy-qca-uniphy.c driver (qca,ipq5018-uni-ssphy):
+enable the clocks, pulse the PHY POR reset (GCC_USB0_PHY_BCR), wait
+for the fuse autoload, then program five SSCG (spread spectrum)
+registers with fixed values.
+
+Crucially, the phy register file at 0x5d000 responds ONLY when the
+usb0 aux and lfps clocks run as well - with either gated, even a read
+hangs the AHB bus (CPU stall, watchdog cannot fire since the other
+core keeps petting it). The vendor driver only takes pipe+cfg_ahb
+because the vendor dwc3 node's clock list carries aux/lfps and the
+controller enables them before phy init; this driver takes all four
+so it cannot be broken by controller clock ordering.
+
+Without this PHY initialized, USB3 devices see phantom terminations
+on the dead SS pairs, keep retrying SS link training and never fall
+back to USB2 - the port appears completely dead for them.
+
+Signed-off-by: Stanisław Pal <kuncy7@gmail.com>
+---
+--- a/drivers/phy/qualcomm/Kconfig
++++ b/drivers/phy/qualcomm/Kconfig
+@@ -154,6 +154,15 @@
+ 	  management. This driver is required even for peripheral only or
+ 	  host only mode configurations.
+ 
++config PHY_QCOM_IPQ5018_USB_SS
++	tristate "Qualcomm IPQ5018 USB SS PHY driver support"
++	depends on USB && (ARCH_QCOM || COMPILE_TEST)
++	select GENERIC_PHY
++	help
++	  Enable this to support the SuperSpeed "uni" PHY transceiver
++	  that is paired with the DWC3 USB core on the Qualcomm IPQ5018
++	  SoC.
++
+ config PHY_QCOM_UNIPHY_PCIE_28LP
+ 	bool "PCIE UNIPHY 28LP PHY driver"
+ 	depends on ARCH_QCOM
+--- a/drivers/phy/qualcomm/Makefile
++++ b/drivers/phy/qualcomm/Makefile
+@@ -4,6 +4,7 @@
+ obj-$(CONFIG_PHY_QCOM_EDP)		+= phy-qcom-edp.o
+ obj-$(CONFIG_PHY_QCOM_IPQ4019_USB)	+= phy-qcom-ipq4019-usb.o
+ obj-$(CONFIG_PHY_QCOM_IPQ806X_SATA)	+= phy-qcom-ipq806x-sata.o
++obj-$(CONFIG_PHY_QCOM_IPQ5018_USB_SS)	+= phy-qcom-ipq5018-usb-ss.o
+ obj-$(CONFIG_PHY_QCOM_M31_USB)		+= phy-qcom-m31.o
+ obj-$(CONFIG_PHY_QCOM_PCIE2)		+= phy-qcom-pcie2.o
+ 
+--- /dev/null
++++ b/drivers/phy/qualcomm/phy-qcom-ipq5018-usb-ss.c
+@@ -0,0 +1,146 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Qualcomm IPQ5018 USB SuperSpeed "uni" PHY driver
++ *
++ * Minimal port of the QSDK phy-qca-uniphy.c (qca,ipq5018-uni-ssphy
++ * branch): pulse the PHY POR reset, enable the clocks, wait for the
++ * fuse autoload, then program the SSCG (spread spectrum) registers.
++ */
++
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/io.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/phy/phy.h>
++#include <linux/platform_device.h>
++#include <linux/reset.h>
++
++#define SSCG_CTRL_REG_1		0x9c
++#define SSCG_CTRL_REG_2		0xa0
++#define SSCG_CTRL_REG_3		0xa4
++#define SSCG_CTRL_REG_4		0xa8
++#define SSCG_CTRL_REG_5		0xac
++
++/* time (us) the PHY takes to autoload its fuse calibration after POR */
++#define PHY_AUTOLOAD_DELAY_US	35
++
++#define NUM_CLKS	4
++
++struct ipq5018_usb_ss_phy {
++	void __iomem *base;
++	struct clk_bulk_data clks[NUM_CLKS];
++	struct reset_control *por_rst;
++};
++
++static void ssphy_write(struct ipq5018_usb_ss_phy *phy, u32 off, u32 val)
++{
++	writel(val, phy->base + off);
++	udelay(100);
++}
++
++static int ipq5018_usb_ss_phy_init(struct phy *_phy)
++{
++	struct ipq5018_usb_ss_phy *phy = phy_get_drvdata(_phy);
++	int ret;
++
++	/*
++	 * All four clocks must run before the register file responds -
++	 * with aux/lfps gated, even a read of the SSCG registers hangs
++	 * the bus (found the hard way). The vendor driver gets away with
++	 * enabling only pipe+cfg_ahb because the vendor dwc3 node clock
++	 * list (which the controller enables before the phy init) also
++	 * carries aux and lfps.
++	 */
++	ret = clk_bulk_prepare_enable(NUM_CLKS, phy->clks);
++	if (ret)
++		return ret;
++
++	reset_control_assert(phy->por_rst);
++	usleep_range(100, 200);
++	reset_control_deassert(phy->por_rst);
++
++	udelay(PHY_AUTOLOAD_DELAY_US);
++
++	ssphy_write(phy, SSCG_CTRL_REG_4, 0x1cb9);
++	ssphy_write(phy, SSCG_CTRL_REG_5, 0x023a);
++	ssphy_write(phy, SSCG_CTRL_REG_3, 0xd360);
++	ssphy_write(phy, SSCG_CTRL_REG_1, 0x1);
++	ssphy_write(phy, SSCG_CTRL_REG_2, 0xeb);
++
++	return 0;
++}
++
++static int ipq5018_usb_ss_phy_exit(struct phy *_phy)
++{
++	struct ipq5018_usb_ss_phy *phy = phy_get_drvdata(_phy);
++
++	clk_bulk_disable_unprepare(NUM_CLKS, phy->clks);
++	reset_control_assert(phy->por_rst);
++
++	return 0;
++}
++
++static const struct phy_ops ipq5018_usb_ss_phy_ops = {
++	.init = ipq5018_usb_ss_phy_init,
++	.exit = ipq5018_usb_ss_phy_exit,
++	.owner = THIS_MODULE,
++};
++
++static int ipq5018_usb_ss_phy_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct ipq5018_usb_ss_phy *phy;
++	struct phy_provider *provider;
++	struct phy *generic_phy;
++	int ret;
++
++	phy = devm_kzalloc(dev, sizeof(*phy), GFP_KERNEL);
++	if (!phy)
++		return -ENOMEM;
++
++	phy->base = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(phy->base))
++		return PTR_ERR(phy->base);
++
++	phy->por_rst = devm_reset_control_get_exclusive(dev, NULL);
++	if (IS_ERR(phy->por_rst))
++		return dev_err_probe(dev, PTR_ERR(phy->por_rst),
++				     "failed to get POR reset\n");
++
++	phy->clks[0].id = "pipe";
++	phy->clks[1].id = "cfg_ahb";
++	phy->clks[2].id = "aux";
++	phy->clks[3].id = "lfps";
++	ret = devm_clk_bulk_get(dev, NUM_CLKS, phy->clks);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to get clocks\n");
++
++	generic_phy = devm_phy_create(dev, NULL, &ipq5018_usb_ss_phy_ops);
++	if (IS_ERR(generic_phy))
++		return PTR_ERR(generic_phy);
++
++	phy_set_drvdata(generic_phy, phy);
++
++	provider = devm_of_phy_provider_register(dev, of_phy_simple_xlate);
++
++	return PTR_ERR_OR_ZERO(provider);
++}
++
++static const struct of_device_id ipq5018_usb_ss_phy_of_match[] = {
++	{ .compatible = "qcom,ipq5018-usb-ssphy" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, ipq5018_usb_ss_phy_of_match);
++
++static struct platform_driver ipq5018_usb_ss_phy_driver = {
++	.probe = ipq5018_usb_ss_phy_probe,
++	.driver = {
++		.name = "ipq5018-usb-ssphy",
++		.of_match_table = ipq5018_usb_ss_phy_of_match,
++	},
++};
++module_platform_driver(ipq5018_usb_ss_phy_driver);
++
++MODULE_DESCRIPTION("Qualcomm IPQ5018 USB SS uni PHY driver");
++MODULE_LICENSE("GPL");

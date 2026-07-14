@@ -1,5 +1,10 @@
 # AX55 v1 — technical findings
 
+> **Historical debug record.** These notes date from the porting/investigation phase
+> (pre-mainline, on an out-of-tree base). Hardware facts (MTD layout, U-Boot logic,
+> chip IDs) remain accurate; some conclusions about the SerDes/datapath were
+> superseded — the current state is in `README.md` and PR #24197.
+
 Reference notes gathered while porting OpenWrt to the TP-Link Archer AX55 v1.
 Confirmed from a **live root shell on stock**, from the **GPL U-Boot/QSDK source**,
 and from FCC internal photos.

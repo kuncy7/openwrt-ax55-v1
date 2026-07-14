@@ -24,11 +24,6 @@
 
 	chosen {
 		stdout-path = "serial0:115200n8";
-		/*
-		 * Stage 3a brings the board up via an initramfs image booted
-		 * from RAM (TFTP); root= is unused for now and is revisited
-		 * with the on-flash layout in stage 3e.
-		 */
 		bootargs-append = " root=/dev/ubiblock0_1 coherent_pool=2M";
 	};
 
@@ -44,10 +39,12 @@
 			debounce-interval = <60>;
 		};
 
-		button-wps {
-			label = "wps";
+		/* the case labels this "WPS/Wi-Fi"; stock treats it as a
+		 * wifi toggle (KEY_WLAN) - use rfkill, the OpenWrt idiom */
+		button-wifi {
+			label = "wifi";
 			gpios = <&tlmm 31 GPIO_ACTIVE_LOW>;
-			linux,code = <KEY_WPS_BUTTON>;
+			linux,code = <KEY_RFKILL>;
 			debounce-interval = <60>;
 		};
 	};
@@ -58,10 +55,9 @@
 		pinctrl-names = "default";
 
 		/*
-		 * LED GPIOs were derived for stage 3a and still need to be
-		 * confirmed against the real board. NOTE: GPIO39 is the
-		 * RTL8367S reset (OEM reset_gpio), NOT a 5GHz-WLAN LED - the
-		 * 5GHz LED node was removed here and must be re-identified.
+		 * LED GPIOs confirmed against the stock device tree. GPIO39 is
+		 * the 5 GHz WLAN LED (the OEM "reset_gpio 39" in the switch
+		 * node is bogus - the real RTL8367S reset is GPIO33).
 		 */
 		led_power: led-power {
 			color = <LED_COLOR_ID_GREEN>;
@@ -93,11 +89,33 @@
 			gpios = <&tlmm 13 GPIO_ACTIVE_HIGH>;
 		};
 
+		led-wlan5g {
+			color = <LED_COLOR_ID_GREEN>;
+			function = LED_FUNCTION_WLAN_5GHZ;
+			gpios = <&tlmm 39 GPIO_ACTIVE_HIGH>;
+		};
+
 		led-usb {
 			color = <LED_COLOR_ID_GREEN>;
 			function = LED_FUNCTION_USB;
 			gpios = <&tlmm 38 GPIO_ACTIVE_HIGH>;
+			trigger-sources = <&usb_port1>;
+			linux,default-trigger = "usbport";
 		};
+	};
+
+	/* vendor "usb_enabled" GPIO - switches the USB port's VBUS rail */
+	reg_usb_vbus: regulator-usb-vbus {
+		compatible = "regulator-fixed";
+		regulator-name = "usb_vbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		gpios = <&tlmm 27 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		/* nothing consumes this supply (the qcom dwc3 glue ignores
+		 * vbus-supply), so keep the rail permanently on */
+		regulator-always-on;
+		regulator-boot-on;
 	};
 };
 
@@ -152,8 +170,7 @@
 
 		/*
 		 * Layout from the stock firmware device tree (OEM
-		 * "IPQ5018/AP-MP03.3"). Dual rootfs (rootfs / rootfs_1);
-		 * the final OpenWrt flashing layout is handled in stage 3e.
+		 * "IPQ5018/AP-MP03.3"), with dual rootfs (rootfs / rootfs_1).
 		 */
 		partitions {
 			compatible = "fixed-partitions";
@@ -257,7 +274,7 @@
 
 /*
  * ===========================================================================
- * Ethernet (kernel 6.12 DWMAC + DSA, all verified on hardware 2026-07-06).
+ * Ethernet:
  *
  *   IPQ5018 gmac1 -> uniphy0 PCS -> 2.5G HSGMII trunk -> RTL8367S DSA switch
  *   All FIVE front jacks are RTL8367S internal PHYs:
@@ -265,17 +282,15 @@
  *   The SoC's internal GE PHY (mdio0:7/gmac0) is NOT bonded out -> disabled.
  *
  *   RTL8367S: MDIO addr 29 on mdio1, reset GPIO 33 (the OEM DTS's "GPIO39"
- *   is wrong/unused). Requires the rtl8365mb SGMII/HSGMII patch (0918) +
- *   rtl8367s-sgmii-firmware. Stock runs the trunk at 1G SGMII; 2.5G HSGMII
- *   verified working with this driver.
+ *   is wrong/unused). The 2.5G HSGMII trunk needs the rtl8365mb SGMII/HSGMII
+ *   patch; no 8051 SerDes firmware is required.
  * ===========================================================================
  */
 
 /*
- * The IPQ5018 internal GE PHY (mdio0 addr 7 / gmac0) is NOT wired to any
+ * The IPQ5018 internal GE PHY (mdio0 addr 7 / gmac0) is not wired to any
  * jack on this board: all five front jacks (blue "WAN" + LAN1-4) hang off
- * the RTL8367S's five internal PHYs (verified per-jack on hardware, see
- * the switch ports below). Keep gmac0 disabled.
+ * the RTL8367S's five internal PHYs. Keep gmac0 disabled.
  */
 &gmac0 {
 	status = "disabled";
@@ -309,11 +324,9 @@
 	reset-gpios = <&tlmm 33 GPIO_ACTIVE_LOW>;
 
 	/*
-	 * RTL8367S (OEM labels it "qca83xx"). MDIO-connected (realtek-mdio).
-	 * reg = 29: confirmed correct (Angel666 working port + forum). The
-	 * switch RESET is GPIO33 (Angel666 "switch = <&tlmm 33 0>" + Sunshainy),
-	 * NOT the OEM-labelled GPIO39 - using 39 left the chip in reset and MDIO
-	 * read back 0xffff ("unrecognized switch").
+	 * RTL8367S (OEM labels it "qca83xx"), MDIO-connected (realtek-mdio) at
+	 * address 29. The switch RESET is GPIO33, not the OEM-labelled GPIO39 -
+	 * holding 39 leaves the chip in reset and MDIO reads back 0xffff.
 	 */
 	switch@29 {
 		compatible = "realtek,rtl8365mb";
@@ -356,7 +369,7 @@
 			#size-cells = <0>;
 
 			/*
-			 * Physical jack -> switch PHY map (verified per-jack):
+			 * Physical jack -> switch PHY map:
 			 * blue WAN = phy0, LAN1 = phy1, LAN2 = phy2,
 			 * LAN3 = phy3, LAN4 = phy4. The SoC's internal GE PHY
 			 * is not bonded out.
@@ -403,6 +416,85 @@
 				};
 			};
 		};
+	};
+};
+
+&usbphy0 {
+	status = "okay";
+};
+
+&soc {
+	/*
+	 * SuperSpeed "uni" PHY (no node in the mainline dtsi - mainline has
+	 * no driver; ours is patch 0922, ported from the QSDK). Layout as in
+	 * the stock DTB ssuniphy@5d000, por_rst = GCC_USB0_PHY_BCR - but on
+	 * top of the vendor's pipe+cfg_ahb the driver also needs aux+lfps:
+	 * with either gated, the 0x5d000 register file hangs the bus (the
+	 * vendor controller node enables them before its phy init).
+	 */
+	ssphy: phy@5d000 {
+		compatible = "qcom,ipq5018-usb-ssphy";
+		reg = <0x0005d000 0x800>;
+
+		clocks = <&gcc GCC_USB0_PIPE_CLK>,
+			 <&gcc GCC_USB0_PHY_CFG_AHB_CLK>,
+			 <&gcc GCC_USB0_AUX_CLK>,
+			 <&gcc GCC_USB0_LFPS_CLK>;
+		clock-names = "pipe",
+			      "cfg_ahb",
+			      "aux",
+			      "lfps";
+
+		resets = <&gcc GCC_USB0_PHY_BCR>;
+
+		#phy-cells = <0>;
+	};
+};
+
+&usb {
+	status = "okay";
+
+	vbus-supply = <&reg_usb_vbus>;
+
+	/*
+	 * The USB pads are behind a TCSR-controlled phy mux (stock DTB:
+	 * qcom,phy-mux-regs = <syscon@1945000 0x2540>). The same register
+	 * inside the mainline tcsr node (0x1937000) is at offset 0x10540.
+	 * TP-Link's U-Boot never selects the USB position - patch 0921
+	 * writes 1 here at probe.
+	 */
+	qcom,phy-mux-regs = <&tcsr 0x10540>;
+
+	/*
+	 * TP-Link's U-Boot leaves the mock UTMI RCG at 120 MHz; the stock
+	 * DTB assigns the UTMI-spec 60 MHz. Without it the HS side never
+	 * detects a connect.
+	 */
+	assigned-clocks = <&gcc GCC_USB0_MOCK_UTMI_CLK>;
+	assigned-clock-rates = <60000000>;
+
+	/*
+	 * The dtsi is written for HS-only operation (no SS phy driver in
+	 * mainline): it substitutes the UTMI clock for the controller's
+	 * PIPE interface. With the real SS phy up this must go away - the
+	 * combination of a live SS phy and the UTMI substitution hangs the
+	 * controller (verified live: the system dies within minutes even
+	 * with no SS device plugged).
+	 */
+	/delete-property/ qcom,select-utmi-as-pipe-clk;
+};
+
+&usb_dwc {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	dr_mode = "host";
+
+	phys = <&usbphy0>, <&ssphy>;
+	phy-names = "usb2-phy", "usb3-phy";
+
+	usb_port1: port@1 {
+		reg = <1>;
+		#trigger-source-cells = <0>;
 	};
 };
 
