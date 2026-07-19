@@ -1,4 +1,4 @@
-# Archer AX55 v1 — patch dla openwrt-25.12 (eko.one.pl)
+# Archer AX55 v1 — patch dla openwrt-25.12
 
 Zawartość katalogu:
 - `ax55-v1-openwrt-2512-full.patch` — jeden scalony patch, czysto
