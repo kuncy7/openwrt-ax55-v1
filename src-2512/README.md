@@ -1,29 +1,33 @@
-# Archer AX55 v1 — pełny patch dla openwrt-25.12 (eko.one.pl)
+# Archer AX55 v1 — patch dla openwrt-25.12 (eko.one.pl)
 
-Jeden scalony patch `ax55-v1-openwrt-2512-full.patch` na gałąź
-`openwrt-25.12` (baza w momencie eksportu: `ab08f6a524`
-"mac80211: ath9k: call reset on init").
+Zawartość katalogu:
+- `ax55-v1-openwrt-2512-full.patch` — jeden scalony patch, czysto
+  tekstowy (aplikuje się i `git apply`, i `patch -p1`); baza w
+  momencie eksportu: `ab08f6a524` na `openwrt-25.12`.
+- `board-tplink_ax55v1.ipq5018`, `board-tplink_ax55v1.qcn6122` —
+  binaria BDF (osobno, poza patchem).
 
-Aplikacja (WYMAGA git apply, patch zawiera delty binarne BDF):
+Instalacja:
 
-    git apply --check ax55-v1-openwrt-2512-full.patch   # próba na sucho
-    git apply ax55-v1-openwrt-2512-full.patch
+    git apply ax55-v1-openwrt-2512-full.patch        # lub patch -p1
+    mkdir -p package/firmware/ipq-wifi/files
+    cp board-tplink_ax55v1.* package/firmware/ipq-wifi/files/
 
-Zawartość (odpowiednik 28 commitów gałęzi ax55-2512):
-- prerekwizyty z main (w main zmergowane przez #22381): backport PCS
-  standalone, CLK recalc-rate, sterownik UNIPHY PCS, IPQ5018 DWMAC;
-- wsparcie AX55 v1: DTS, obrazy, sysupgrade (dual-boot), USB (HS+SS),
-  LED-y/przyciski, fabryczne MAC-i z tp_data (wzorzec board.d jak AX80: preinit mount + get_mac_binary, WiFi przez 11-ath11k-caldata, eth0 przypięty przez board.json);
-- retarget patcha rtl8365mb (SGMII/HSGMII) na niepodzielony sterownik
-  25.12 + poprawka nazw zegarów UNIPHY pod GCC 25.12;
-- **fix BDF** (binarny): bez niego 2.4 GHz ma głuchy odbiornik
-  (-86 dBm zamiast -42, przepustowość ~0).
+Patch dodaje w Makefile ipq-wifi kopiowanie `files/*` do build dir
+i pozycję `tplink_ax55v1` w ALLWIFIBOARDS — pliki podłożone jak wyżej
+trafią do pakietu `ipq-wifi-tplink_ax55v1`.
+
+md5 binariów:
+    1727903fb83a987388faef60c7307d0c  board-tplink_ax55v1.ipq5018
+    218eff8dd33789a973d123bc68c2b4ac  board-tplink_ax55v1.qcn6122
 
 Uwagi:
+- BDF-y są obowiązkowe: bez nich 2.4 GHz ma głuchy odbiornik
+  (-86 dBm zamiast -42). Docelowo wejdą przez firmware_qca-wireless
+  (PR #143) - wtedy zwykły bump ipq-wifi zamiast plików w files/.
 - Overclock 1.296 GHz NIE wchodzi (dokładany na poziomie buildera).
 - Katalog `src/` w korzeniu repo to wariant mainline (PR #24197) —
-  NIE aplikuje się na 25.12; do 25.12 służy wyłącznie ten katalog.
+  nie aplikuje się na 25.12; do 25.12 służy wyłącznie ten katalog.
 - Znany otwarty temat: sporadyczna degradacja trunku przy pierwszym
   boocie po wielogodzinnym wyłączeniu (badana na netdev; możliwa
-  przyczyna sprzętowa egzemplarza). Nie blokuje normalnego użycia —
-  reboot leczy.
+  przyczyna sprzętowa egzemplarza). Reboot leczy.
