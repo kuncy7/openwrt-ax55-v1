@@ -7,15 +7,28 @@ Zawartość katalogu:
 - `board-tplink_ax55v1.ipq5018`, `board-tplink_ax55v1.qcn6122` —
   binaria BDF (osobno, poza patchem).
 
-Instalacja:
+Instalacja (UWAGA: uzyj `git apply`, nie `patch -p1`):
 
-    git apply ax55-v1-openwrt-2512-full.patch        # lub patch -p1
+    git apply --check ax55-v1-openwrt-2512-full.patch   # proba na sucho
+    git apply ax55-v1-openwrt-2512-full.patch
     mkdir -p package/firmware/ipq-wifi/files
     cp board-tplink_ax55v1.* package/firmware/ipq-wifi/files/
 
+Dlaczego `git apply`: jest atomowy - przy niepasujacym kontekscie
+przerywa z bledem. `patch -p1` odrzuca pojedynczy hunk do `.rej`
+i idzie dalej, wiec build sie *uda*, ale np. bez symboli DWMAC -
+efekt: brak `eth0`, a w konsekwencji `rtl8365mb: unable to register
+switch` (DSA nie ma conduitu). Jesli mimo wszystko uzywasz `patch`,
+sprawdz potem: `find . -name '*.rej'`.
+
+Weryfikacja PRZED flashem - w zbudowanym kernelu musza byc:
+
+    grep -E "CONFIG_(DWMAC_IPQ5018|PCS_QCA_UNIPHY|STMMAC_ETH)" \
+        build_dir/target-*/linux-qualcommax_ipq50xx/linux-6.12.*/.config
+
 Patch dodaje w Makefile ipq-wifi kopiowanie `files/*` do build dir
-i pozycję `tplink_ax55v1` w ALLWIFIBOARDS — pliki podłożone jak wyżej
-trafią do pakietu `ipq-wifi-tplink_ax55v1`.
+i pozycje `tplink_ax55v1` w ALLWIFIBOARDS - pliki podlozone jak wyzej
+trafia do pakietu `ipq-wifi-tplink_ax55v1`.
 
 md5 binariów:
     1727903fb83a987388faef60c7307d0c  board-tplink_ax55v1.ipq5018
@@ -28,6 +41,8 @@ Uwagi:
 - Overclock 1.296 GHz NIE wchodzi (dokładany na poziomie buildera).
 - Katalog `src/` w korzeniu repo to wariant mainline (PR #24197) —
   nie aplikuje się na 25.12; do 25.12 służy wyłącznie ten katalog.
+- DWMAC i qca-nss-dp to konkurencyjne stosy ethernetowe - dla AX55 v1
+  musi byc DWMAC, dlatego w DEVICE_PACKAGES jest `-kmod-qca-nss-dp`.
 - Znany otwarty temat: sporadyczna degradacja trunku przy pierwszym
   boocie po wielogodzinnym wyłączeniu (badana na netdev; możliwa
   przyczyna sprzętowa egzemplarza). Reboot leczy.
