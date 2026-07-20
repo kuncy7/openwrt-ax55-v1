@@ -2,7 +2,7 @@
 
 Zawartość katalogu:
 - `ax55-v1-openwrt-2512-full.patch` — jeden scalony patch, czysto
-  tekstowy (aplikuje się i `git apply`, i `patch -p1`); baza w
+  tekstowy (bez sekcji binarnych); baza w
   momencie eksportu: `ab08f6a524` na `openwrt-25.12`.
 - `board-tplink_ax55v1.ipq5018`, `board-tplink_ax55v1.qcn6122` —
   binaria BDF (osobno, poza patchem).
