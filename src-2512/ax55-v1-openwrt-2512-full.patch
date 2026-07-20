@@ -4690,33 +4690,32 @@ index 9be1d8211c..bd36692a5a 100644
  	linksys,mx2000|\
  	linksys,mx5500|\
 diff --git a/target/linux/qualcommax/ipq50xx/config-default b/target/linux/qualcommax/ipq50xx/config-default
-index 33e5611af4..a7cefae5a5 100644
+index 33e5611af4..b213905d39 100644
 --- a/target/linux/qualcommax/ipq50xx/config-default
 +++ b/target/linux/qualcommax/ipq50xx/config-default
-@@ -1,3 +1,6 @@
+@@ -1,3 +1,14 @@
++# DWMAC + UNIPHY-PCS ethernet path (enabled per board through the DTS).
++# Kept as one block at the top of the file on purpose: these symbols must
++# not land in a hunk anchored at EOF, which is the most fragile context
++# when this series is applied to a downstream tree.
 +# CONFIG_DWMAC_GENERIC is not set
 +CONFIG_DWMAC_IPQ5018=y
 +# CONFIG_DWMAC_QCOM_ETHQOS is not set
++CONFIG_PCS_QCA_UNIPHY=y
++CONFIG_PCS_XPCS=y
++CONFIG_STMMAC_ETH=y
++CONFIG_STMMAC_PLATFORM=y
  CONFIG_GPIO_WATCHDOG=y
  # CONFIG_GPIO_WATCHDOG_ARCH_INITCALL is not set
  CONFIG_GRO_CELLS=y
-@@ -11,7 +14,10 @@ CONFIG_NET_DSA=y
- CONFIG_NET_DSA_QCA8K=y
+@@ -12,6 +23,7 @@ CONFIG_NET_DSA_QCA8K=y
  CONFIG_NET_DSA_QCA8K_LEDS_SUPPORT=y
  CONFIG_NET_DSA_TAG_QCA=y
-+CONFIG_PCS_QCA_UNIPHY=y
-+CONFIG_PCS_XPCS=y
  CONFIG_PHYLINK=y
 +CONFIG_PHY_QCOM_IPQ5018_USB_SS=y
  CONFIG_PHY_QCOM_M31_USB=y
  CONFIG_PHY_QCOM_UNIPHY_PCIE_28LP=y
  CONFIG_PINCTRL_IPQ5018=y
-@@ -24,3 +30,5 @@ CONFIG_QCOM_Q6V5_MPD=y
- CONFIG_QCOM_Q6V5_WCSS_SEC=y
- CONFIG_QCOM_TMEL_QMP_MAILBOX=y
- CONFIG_SPI_QPIC_SNAND=y
-+CONFIG_STMMAC_ETH=y
-+CONFIG_STMMAC_PLATFORM=y
 diff --git a/target/linux/qualcommax/patches-6.12/0842-arm64-dts-qcom-ipq5018-add-uniphy-node.patch b/target/linux/qualcommax/patches-6.12/0842-arm64-dts-qcom-ipq5018-add-uniphy-node.patch
 new file mode 100644
 index 0000000000..58983e8e2e

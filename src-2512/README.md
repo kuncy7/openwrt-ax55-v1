@@ -26,6 +26,15 @@ Weryfikacja PRZED flashem - w zbudowanym kernelu musza byc:
     grep -E "CONFIG_(DWMAC_IPQ5018|PCS_QCA_UNIPHY|STMMAC_ETH)" \
         build_dir/target-*/linux-qualcommax_ipq50xx/linux-6.12.*/.config
 
+Szybka kontrola GOTOWEGO OBRAZU (bez flashowania) - rozpakowuje jadro
+z sysupgrade.bin i sprawdza, czy sterownik tam jest:
+
+    ./check-image-dwmac.sh <plik-sysupgrade.bin>
+
+Musi wypisac OBECNY dla `ipq5018-gmac-dwmac` i `stmmaceth`. Jesli
+wypisze BRAK - sterownik nie zostal skompilowany i ethernet nie
+zadziala, niezaleznie od DTS.
+
 Patch dodaje w Makefile ipq-wifi kopiowanie `files/*` do build dir
 i pozycje `tplink_ax55v1` w ALLWIFIBOARDS - pliki podlozone jak wyzej
 trafia do pakietu `ipq-wifi-tplink_ax55v1`.
