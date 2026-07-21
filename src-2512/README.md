@@ -40,13 +40,16 @@ i pozycje `tplink_ax55v1` w ALLWIFIBOARDS - pliki podlozone jak wyzej
 trafia do pakietu `ipq-wifi-tplink_ax55v1`.
 
 md5 binariów:
-    1727903fb83a987388faef60c7307d0c  board-tplink_ax55v1.ipq5018
-    218eff8dd33789a973d123bc68c2b4ac  board-tplink_ax55v1.qcn6122
+    b541dc294dba577d720d8d88e5940fc8  board-tplink_ax55v1.ipq5018
+    30deb3062b590e48e4fb6e9084d2a488  board-tplink_ax55v1.qcn6122
 
 Uwagi:
 - BDF-y są obowiązkowe: bez nich 2.4 GHz ma głuchy odbiornik
-  (-86 dBm zamiast -42). Docelowo wejdą przez firmware_qca-wireless
-  (PR #143) - wtedy zwykły bump ipq-wifi zamiast plików w files/.
+  (-86 dBm zamiast -42). Wersja z 21.07.2026 uzupełnia dodatkowo
+  wyzerowane tablice mocy — bez tego firmware ograniczał oba pasma
+  do 13 dBm zamiast 20 (2.4 GHz) i 23 (5 GHz). Docelowo wejdą przez
+  firmware_qca-wireless (PR #143) - wtedy zwykły bump ipq-wifi zamiast
+  plików w files/.
 - Overclock 1.296 GHz NIE wchodzi (dokładany na poziomie buildera).
 - Katalog `src/` w korzeniu repo to wariant mainline (PR #24197) —
   nie aplikuje się na 25.12; do 25.12 służy wyłącznie ten katalog.
