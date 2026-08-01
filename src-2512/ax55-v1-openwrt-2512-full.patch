@@ -5855,6 +5855,64 @@ index 0000000000..2180e11131
 ++
 ++MODULE_DESCRIPTION("Qualcomm IPQ5018 USB SS uni PHY driver");
 ++MODULE_LICENSE("GPL");
+diff --git a/target/linux/qualcommax/patches-6.12/0923-usb-dwc3-qcom-select-phy-mux-before-reset.patch b/target/linux/qualcommax/patches-6.12/0923-usb-dwc3-qcom-select-phy-mux-before-reset.patch
+new file mode 100644
+index 0000000000..6aeb6ad14b
+--- /dev/null
++++ b/target/linux/qualcommax/patches-6.12/0923-usb-dwc3-qcom-select-phy-mux-before-reset.patch
+@@ -0,0 +1,52 @@
++From: Stanislaw Pal <kuncy7@gmail.com>
++Subject: [PATCH] usb: dwc3: qcom: select the phy mux before the reset
++
++On IPQ5018 the USB pads are shared with PCIe through a mux in TCSR.
++The selection was made near the end of probe, after the controller had
++already been through its reset and after the clocks were up.
++
++The vendor driver (QSDK dwc3-qcom.c, qcom,multiplexed-phy) writes the
++selection as the very first thing in probe, ahead of the usb30 master
++reset and the clock setup. Match that: the SuperSpeed pads are muxed
++away for the whole reset otherwise, and the link never leaves
++Rx.Detect. USB2 does not go through this mux, which is why high speed
++worked throughout.
++
++Measured on a TP-Link Archer AX55 v1: with this change a USB3 stick
++enumerates at SuperSpeed and hdparm reports 112-116 MB/s, against
++~100 MB/s under the vendor firmware.
++
++Signed-off-by: Stanislaw Pal <kuncy7@gmail.com>
++---
++--- a/drivers/usb/dwc3/dwc3-qcom.c
+++++ b/drivers/usb/dwc3/dwc3-qcom.c
++@@ -779,6 +779,18 @@
++ 	platform_set_drvdata(pdev, qcom);
++ 	qcom->dev = &pdev->dev;
++ 
+++	/*
+++	 * Select the USB position of the phy mux before anything comes out
+++	 * of reset. The vendor driver does this as the first thing in probe,
+++	 * ahead of the controller reset and the clocks; selecting it later
+++	 * leaves the SuperSpeed pads muxed away while the controller resets,
+++	 * and the SS link then never leaves Rx.Detect (USB2 is unaffected,
+++	 * it does not go through this mux).
+++	 */
+++	ret = dwc3_qcom_setup_phy_mux(qcom);
+++	if (ret)
+++		return ret;
+++
++ 	qcom->resets = devm_reset_control_array_get_optional_exclusive(dev);
++ 	if (IS_ERR(qcom->resets)) {
++ 		return dev_err_probe(&pdev->dev, PTR_ERR(qcom->resets),
++@@ -826,10 +838,6 @@
++ 	if (ignore_pipe_clk)
++ 		dwc3_qcom_select_utmi_clk(qcom);
++ 
++-	ret = dwc3_qcom_setup_phy_mux(qcom);
++-	if (ret)
++-		goto clk_disable;
++-
++ 	ret = dwc3_qcom_of_register_core(pdev);
++ 	if (ret) {
++ 		dev_err(dev, "failed to register DWC3 Core, err=%d\n", ret);
 diff --git a/target/linux/qualcommax/patches-6.12/0951-net-pcs-add-uniphy-pcs.patch b/target/linux/qualcommax/patches-6.12/0951-net-pcs-add-uniphy-pcs.patch
 new file mode 100644
 index 0000000000..05ab18902e
