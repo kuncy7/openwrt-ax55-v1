@@ -1,0 +1,100 @@
+From: Stanislaw Pal <kuncy7@gmail.com>
+Subject: [PATCH] usb: dwc3: qcom: select the TCSR phy mux before the controller reset
+
+On IPQ5018 and IPQ5332 the USB SuperSpeed pads are shared with PCIe
+through a mux in TCSR (0x01947540 on both SoCs). The bootloader does
+not necessarily select the USB position: GL.iNet's U-Boot happens to
+leave it right on the Flint 3, TP-Link's on the Archer AX55 v1 never
+touches it, so without this the SS link never leaves Rx.Detect there
+while USB2 keeps working (high speed does not go through the mux).
+
+Ordering is the critical part. The mux has to be written BEFORE the
+controller goes through its reset in probe: selecting it later - even
+before dwc3_qcom_of_register_core() - leaves the SS pads muxed away for
+the whole reset and the link is dead for good. This is also what the
+vendor (QSDK) dwc3-qcom driver does: dwc3_qcom_phy_sel() is the first
+thing in probe. The error path is a plain return, the clocks are not up
+yet at this point.
+
+The register is described by an optional DT property, so boards whose
+bootloader already selects USB (or SoCs without the mux) need nothing:
+
+	qcom,phy-mux-regs = <&tcsr 0x10540>;
+
+against the TCSR syscon node. Goes on top of the qcom-uniphy-usb PHY
+series; the PHY driver itself needs no changes for this.
+
+Tested on a TP-Link Archer AX55 v1 (IPQ5018): a USB 3.2 gen 1 stick
+enumerates at 5 Gbps and sustains 112-116 MB/s, both cold boot and
+reboot. Same TCSR offset confirmed on IPQ5332 by Dusknoir.
+
+Signed-off-by: Stanislaw Pal <kuncy7@gmail.com>
+---
+--- a/drivers/usb/dwc3/dwc3-qcom.c
++++ b/drivers/usb/dwc3/dwc3-qcom.c
+@@ -22,6 +22,8 @@
+ #include <linux/iopoll.h>
+ #include <linux/usb/hcd.h>
+ #include <linux/usb.h>
++#include <linux/mfd/syscon.h>
++#include <linux/regmap.h>
+ #include "core.h"
+ 
+ /* USB QSCRATCH Hardware registers */
+@@ -730,6 +732,37 @@ static int dwc3_qcom_of_register_core(st
+ 	return ret;
+ }
+ 
++/*
++ * Some IPQ SoCs (e.g. IPQ5018) route the USB pads through a PHY mux
++ * controlled from a TCSR register; the bootloader does not necessarily
++ * select the USB position. Optional "qcom,phy-mux-regs" = <&tcsr offset>
++ * points at it; the vendor driver writes 1 ("usb phy mux sel") there.
++ */
++static int dwc3_qcom_setup_phy_mux(struct dwc3_qcom *qcom)
++{
++	struct of_phandle_args args;
++	struct regmap *map;
++	int ret;
++
++	ret = of_parse_phandle_with_fixed_args(qcom->dev->of_node,
++					       "qcom,phy-mux-regs", 1, 0,
++					       &args);
++	if (ret)
++		return 0;	/* optional */
++
++	map = syscon_node_to_regmap(args.np);
++	of_node_put(args.np);
++	if (IS_ERR(map))
++		return dev_err_probe(qcom->dev, PTR_ERR(map),
++				     "failed to map phy mux regs\n");
++
++	ret = regmap_write(map, args.args[0], 0x1);
++	if (ret)
++		dev_err(qcom->dev, "failed to select USB phy mux: %d\n", ret);
++
++	return ret;
++}
++
+ static int dwc3_qcom_probe(struct platform_device *pdev)
+ {
+ 	struct device_node	*np = pdev->dev.of_node;
+@@ -746,6 +779,18 @@ static int dwc3_qcom_probe(struct platfo
+ 	platform_set_drvdata(pdev, qcom);
+ 	qcom->dev = &pdev->dev;
+ 
++	/*
++	 * Select the USB position of the phy mux before anything comes out
++	 * of reset. The vendor driver does this as the first thing in probe,
++	 * ahead of the controller reset and the clocks; selecting it later
++	 * leaves the SuperSpeed pads muxed away while the controller resets,
++	 * and the SS link then never leaves Rx.Detect (USB2 is unaffected,
++	 * it does not go through this mux).
++	 */
++	ret = dwc3_qcom_setup_phy_mux(qcom);
++	if (ret)
++		return ret;
++
+ 	qcom->resets = devm_reset_control_array_get_optional_exclusive(dev);
+ 	if (IS_ERR(qcom->resets)) {
+ 		return dev_err_probe(&pdev->dev, PTR_ERR(qcom->resets),

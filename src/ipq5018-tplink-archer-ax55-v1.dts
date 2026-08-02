@@ -134,14 +134,6 @@
 	status = "okay";
 };
 
-&crypto {
-	status = "okay";
-};
-
-&cryptobam {
-	status = "okay";
-};
-
 &prng {
 	status = "okay";
 };
@@ -296,6 +288,14 @@
 	status = "disabled";
 };
 
+/*
+ * The internal GE PHY behind mdio0 is not bonded out on this board (see the
+ * gmac0 note above) - but mdio0 must stay enabled anyway: registering the
+ * ge_phy deasserts GCC_GEPHY_MISC_ARES, and that reset also gates the
+ * MDC/MDIO path shared with mdio1. With mdio0 disabled the RTL8367S on
+ * mdio1 stops responding to SMI entirely (chip id read -ETIMEDOUT,
+ * measured 2026-07-30).
+ */
 &mdio0 {
 	status = "okay";
 };

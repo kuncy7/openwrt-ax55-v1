@@ -1,4 +1,4 @@
-From: Stanisław Pal <kuncy7@gmail.com>
+From: OpenWrt
 Date: Tue, 7 Jul 2026 14:00:00 +0200
 Subject: [PATCH] phy: qcom: add IPQ5018 USB SuperSpeed uni PHY driver
 
@@ -19,11 +19,11 @@ Without this PHY initialized, USB3 devices see phantom terminations
 on the dead SS pairs, keep retrying SS link training and never fall
 back to USB2 - the port appears completely dead for them.
 
-Signed-off-by: Stanisław Pal <kuncy7@gmail.com>
+Signed-off-by: OpenWrt <noreply@openwrt.org>
 ---
 --- a/drivers/phy/qualcomm/Kconfig
 +++ b/drivers/phy/qualcomm/Kconfig
-@@ -154,6 +154,15 @@
+@@ -154,6 +154,15 @@ config PHY_QCOM_M31_USB
  	  management. This driver is required even for peripheral only or
  	  host only mode configurations.
  
@@ -41,7 +41,7 @@ Signed-off-by: Stanisław Pal <kuncy7@gmail.com>
  	depends on ARCH_QCOM
 --- a/drivers/phy/qualcomm/Makefile
 +++ b/drivers/phy/qualcomm/Makefile
-@@ -4,6 +4,7 @@
+@@ -4,6 +4,7 @@ obj-$(CONFIG_PHY_QCOM_APQ8064_SATA)	+= p
  obj-$(CONFIG_PHY_QCOM_EDP)		+= phy-qcom-edp.o
  obj-$(CONFIG_PHY_QCOM_IPQ4019_USB)	+= phy-qcom-ipq4019-usb.o
  obj-$(CONFIG_PHY_QCOM_IPQ806X_SATA)	+= phy-qcom-ipq806x-sata.o
