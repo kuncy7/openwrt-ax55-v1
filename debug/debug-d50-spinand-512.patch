@@ -1,0 +1,93 @@
+From: Stanislaw Pal <kuncy7@gmail.com>
+Subject: [DEBUG] mtd/spinand: pinpoint the -512 probe failure
+
+Debug-only, not for merging. Prints the return value of every stage of
+the spinand probe/registration path, so a single boot log shows exactly
+where -512 is born. Drop it into
+target/linux/generic/pending-6.18/999-debug-spinand.patch and rebuild.
+
+--- a/drivers/mtd/mtdcore.c	2026-08-08 22:10:18.246977361 +0200
++++ b/drivers/mtd/mtdcore.c	2026-08-08 22:10:18.278977663 +0200
+@@ -1023,6 +1023,7 @@
+ 		size = mtd_otp_size(mtd, true);
+ 		if (size < 0) {
+ 			err = size;
++			pr_err("DBG otp: user mtd_otp_size err=%d\n", err);
+ 			goto err;
+ 		}
+ 
+@@ -1031,6 +1032,7 @@
+ 						       mtd_nvmem_user_otp_reg_read);
+ 			if (IS_ERR(nvmem)) {
+ 				err = PTR_ERR(nvmem);
++				pr_err("DBG otp: user nvmem_register err=%d\n", err);
+ 				goto err;
+ 			}
+ 			mtd->otp_user_nvmem = nvmem;
+@@ -1041,6 +1043,7 @@
+ 		size = mtd_otp_size(mtd, false);
+ 		if (size < 0) {
+ 			err = size;
++			pr_err("DBG otp: fact mtd_otp_size err=%d\n", err);
+ 			goto err;
+ 		}
+ 
+@@ -1060,6 +1063,7 @@
+ 			err = mtd_nvmem_fact_otp_reg_read(mtd, 0, otp, size);
+ 			if (err < 0) {
+ 				kfree(otp);
++				pr_err("DBG otp: fact reg_read err=%d\n", err);
+ 				goto err;
+ 			}
+ 			add_device_randomness(otp, err);
+@@ -1069,6 +1073,7 @@
+ 						       mtd_nvmem_fact_otp_reg_read);
+ 			if (IS_ERR(nvmem)) {
+ 				err = PTR_ERR(nvmem);
++				pr_err("DBG otp: fact nvmem_register err=%d\n", err);
+ 				goto err;
+ 			}
+ 			mtd->otp_factory_nvmem = nvmem;
+@@ -1123,8 +1128,10 @@
+ 	mtd_set_dev_defaults(mtd);
+ 
+ 	ret = mtd_otp_nvmem_add(mtd);
+-	if (ret)
++	if (ret) {
++		pr_err("DBG mtd_otp_nvmem_add ret=%d\n", ret);
+ 		goto out;
++	}
+ 
+ 	if (IS_ENABLED(CONFIG_MTD_PARTITIONED_MASTER)) {
+ 		ret = add_mtd_device(mtd);
+@@ -1134,6 +1141,8 @@
+ 
+ 	/* Prefer parsed partitions over driver-provided fallback */
+ 	ret = parse_mtd_partitions(mtd, types, parser_data);
++	if (ret < 0)
++		pr_err("DBG parse_mtd_partitions ret=%d\n", ret);
+ 	if (ret == -EPROBE_DEFER)
+ 		goto out;
+ 
+diff -Naur a/drivers/mtd/nand/spi/core.c b/drivers/mtd/nand/spi/core.c
+--- a/drivers/mtd/nand/spi/core.c	2026-08-08 22:10:18.248977380 +0200
++++ b/drivers/mtd/nand/spi/core.c	2026-08-08 22:10:18.277977653 +0200
+@@ -1715,12 +1715,16 @@
+ 	mtd->dev.parent = &mem->spi->dev;
+ 
+ 	ret = spinand_init(spinand);
+-	if (ret)
++	if (ret) {
++		dev_err(&mem->spi->dev, "DBG spinand_init ret=%d\n", ret);
+ 		return ret;
++	}
+ 
+ 	ret = mtd_device_register(mtd, NULL, 0);
+-	if (ret)
++	if (ret) {
++		dev_err(&mem->spi->dev, "DBG mtd_device_register ret=%d\n", ret);
+ 		goto err_spinand_cleanup;
++	}
+ 
+ 	return 0;
+ 
