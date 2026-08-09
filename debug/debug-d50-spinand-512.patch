@@ -1,13 +1,16 @@
 From: Stanislaw Pal <kuncy7@gmail.com>
-Subject: [DEBUG] mtd/spinand: pinpoint the -512 probe failure
+Subject: [DEBUG v2] mtd/spinand: pinpoint the -512 probe failure
 
-Debug-only, not for merging. Prints the return value of every stage of
-the spinand probe/registration path, so a single boot log shows exactly
-where -512 is born. Drop it into
+Debug-only, not for merging. Round 2: the first log showed -512 is born
+inside spinand_init() on the deferred re-probe, so this version prints
+the return value of every step inside spinand_init()/spinand_init_flash()
+as well (read_cfg, upd_cfg, configure_chip, per-target select/unlock,
+nanddev_init, ECC engine init, OTP ops, OOB freebytes), on top of the
+round-1 probe/mtd instrumentation. Same usage: drop it into
 target/linux/generic/pending-6.18/999-debug-spinand.patch and rebuild.
 
---- a/drivers/mtd/mtdcore.c	2026-08-08 22:10:18.246977361 +0200
-+++ b/drivers/mtd/mtdcore.c	2026-08-08 22:10:18.278977663 +0200
+--- a/drivers/mtd/mtdcore.c	2026-08-09 13:08:22.929977201 +0200
++++ b/drivers/mtd/mtdcore.c	2026-08-09 13:08:22.938977362 +0200
 @@ -1023,6 +1023,7 @@
  		size = mtd_otp_size(mtd, true);
  		if (size < 0) {
@@ -70,9 +73,115 @@ target/linux/generic/pending-6.18/999-debug-spinand.patch and rebuild.
  		goto out;
  
 diff -Naur a/drivers/mtd/nand/spi/core.c b/drivers/mtd/nand/spi/core.c
---- a/drivers/mtd/nand/spi/core.c	2026-08-08 22:10:18.248977380 +0200
-+++ b/drivers/mtd/nand/spi/core.c	2026-08-08 22:10:18.277977653 +0200
-@@ -1715,12 +1715,16 @@
+--- a/drivers/mtd/nand/spi/core.c	2026-08-09 13:08:22.931977237 +0200
++++ b/drivers/mtd/nand/spi/core.c	2026-08-09 13:08:22.965977848 +0200
+@@ -1516,12 +1516,16 @@
+ 	int ret, i;
+ 
+ 	ret = spinand_read_cfg(spinand);
+-	if (ret)
++	if (ret) {
++		dev_err(dev, "DBG read_cfg ret=%d\n", ret);
+ 		return ret;
++	}
+ 
+ 	ret = spinand_upd_cfg(spinand, CFG_OTP_ENABLE, 0);
+-	if (ret)
++	if (ret) {
++		dev_err(dev, "DBG upd_cfg(OTP,0) ret=%d\n", ret);
+ 		return ret;
++	}
+ 
+ 	ret = spinand_manufacturer_init(spinand);
+ 	if (ret) {
+@@ -1532,18 +1536,24 @@
+ 	}
+ 
+ 	ret = spinand_configure_chip(spinand);
+-	if (ret)
++	if (ret) {
++		dev_err(dev, "DBG configure_chip ret=%d\n", ret);
+ 		goto manuf_cleanup;
++	}
+ 
+ 	/* After power up, all blocks are locked, so unlock them here. */
+ 	for (i = 0; i < nand->memorg.ntargets; i++) {
+ 		ret = spinand_select_target(spinand, i);
+-		if (ret)
++		if (ret) {
++			dev_err(dev, "DBG select_target(%d) ret=%d\n", i, ret);
+ 			goto manuf_cleanup;
++		}
+ 
+ 		ret = spinand_lock_block(spinand, BL_ALL_UNLOCKED);
+-		if (ret)
++		if (ret) {
++			dev_err(dev, "DBG lock_block(%d) ret=%d\n", i, ret);
+ 			goto manuf_cleanup;
++		}
+ 	}
+ 
+ 	return 0;
+@@ -1606,16 +1616,22 @@
+ 	spinand->oobbuf = spinand->databuf + nanddev_page_size(nand);
+ 
+ 	ret = spinand_init_cfg_cache(spinand);
+-	if (ret)
++	if (ret) {
++		dev_err(dev, "DBG init_cfg_cache ret=%d\n", ret);
+ 		goto err_free_bufs;
++	}
+ 
+ 	ret = spinand_init_flash(spinand);
+-	if (ret)
++	if (ret) {
++		dev_err(dev, "DBG init_flash ret=%d\n", ret);
+ 		goto err_free_bufs;
++	}
+ 
+ 	ret = nanddev_init(nand, &spinand_ops, THIS_MODULE);
+-	if (ret)
++	if (ret) {
++		dev_err(dev, "DBG nanddev_init ret=%d\n", ret);
+ 		goto err_manuf_cleanup;
++	}
+ 
+ 	/* SPI-NAND default ECC engine is on-die */
+ 	nand->ecc.defaults.engine_type = NAND_ECC_ENGINE_TYPE_ON_DIE;
+@@ -1623,8 +1639,10 @@
+ 
+ 	spinand_ecc_enable(spinand, false);
+ 	ret = nanddev_ecc_engine_init(nand);
+-	if (ret)
++	if (ret) {
++		dev_err(dev, "DBG ecc_engine_init ret=%d\n", ret);
+ 		goto err_cleanup_nanddev;
++	}
+ 
+ 	/*
+ 	 * Continuous read can only be enabled with an on-die ECC engine, so the
+@@ -1643,14 +1661,18 @@
+ 
+ 	if (spinand_user_otp_size(spinand) || spinand_fact_otp_size(spinand)) {
+ 		ret = spinand_set_mtd_otp_ops(spinand);
+-		if (ret)
++		if (ret) {
++			dev_err(dev, "DBG set_mtd_otp_ops ret=%d\n", ret);
+ 			goto err_cleanup_ecc_engine;
++		}
+ 	}
+ 
+ 	if (nand->ecc.engine) {
+ 		ret = mtd_ooblayout_count_freebytes(mtd);
+-		if (ret < 0)
++		if (ret < 0) {
++			dev_err(dev, "DBG count_freebytes ret=%d\n", ret);
+ 			goto err_cleanup_ecc_engine;
++		}
+ 	}
+ 
+ 	mtd->oobavail = ret;
+@@ -1715,12 +1737,16 @@
  	mtd->dev.parent = &mem->spi->dev;
  
  	ret = spinand_init(spinand);
