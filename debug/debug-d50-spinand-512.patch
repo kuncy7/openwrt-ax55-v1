@@ -1,6 +1,13 @@
 From: Stanislaw Pal <kuncy7@gmail.com>
 Subject: [DEBUG v2] mtd/spinand: pinpoint the -512 probe failure
 
+RESOLVED (2026-08-09, thread post #443): the -512 came from the qpic
+ECC chip-requirement fallback path ("trying 4-bits") failing on the
+DEFERRED re-probe. Pinning the ECC config in the board DTS
+(nand-ecc-strength = <4>; nand-ecc-step-size = <512>;) avoids the
+fallback entirely and the board boots. This patch is a diagnostic tool
+only - do not apply it as a fix; it stays here for reference.
+
 Debug-only, not for merging. Round 2: the first log showed -512 is born
 inside spinand_init() on the deferred re-probe, so this version prints
 the return value of every step inside spinand_init()/spinand_init_flash()
