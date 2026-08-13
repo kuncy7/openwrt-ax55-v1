@@ -1,50 +1,63 @@
-From 99cba66bc8cc0c37100d6f5127c0f5f182b8345c Mon Sep 17 00:00:00 2001
+From bd6a3f8a0ee98d465d83863b4e80efcae0b1d24c Mon Sep 17 00:00:00 2001
 From: Stanislaw Pal <kuncy7@gmail.com>
-Date: Wed, 5 Aug 2026 21:30:00 +0200
+Date: Thu, 13 Aug 2026 11:38:12 +0200
 Subject: [PATCH] clk: qcom: ipq-cmn-pll: keep the CMN block bus clocks enabled
 
 The probe function takes a runtime PM reference to enable the GCC AHB &
 SYS clocks of the CMN PLL block, registers the clocks, and then drops
-the reference, letting pm_clk gate both clocks a few milliseconds after
-probe has returned.
+the reference, letting pm_clk gate both clocks asynchronously a few
+milliseconds after probe has returned.
 
-On IPQ5018 the SoC does not survive that gate: boards die silently
-within milliseconds of the CMN PLL probe, before userspace exists and
-without any consumer of the PLL outputs being active. Depending on the
-binary layout (micro-timing) this ranges from an occasional hang to a
-100% reproducible boot loop. The only variable that changes the outcome
-is whether the reference is held.
+On IPQ5018 that gate races with early-boot activity on the bus and can
+hang the SoC: boards die silently right after the CMN PLL probe, before
+the next initcall gets to run, and the watchdog resets them. Whether a
+given kernel binary survives depends on micro-timing, ranging from an
+occasional hang to a 100% reproducible boot loop. The failure has been
+reported independently on three boards from three vendors (TP-Link
+Archer AX55 v1, GL.iNet GL-B3000, Cudy P5).
 
-This is not about the driver's own register accesses: the common clock
-framework already wraps the provider ops in clk_pm_runtime_get()/put(),
-so accesses made through CCF are safe with or without this change. What
-the fatal access is has not been pinned down yet; on IPQ5018 the CMN PLL
-block sits in the same CSR region as the MDIO controllers and the
-uniphys, which would explain why gating this clock can affect drivers
-other than this one, but that is still being investigated.
+Isolation on the Cudy P5 (by Georg Seema) shows the failure is a
+matter of timing against boot activity, not a steady-state clock
+dependency: the probe completes in ~628 us and the board dies before
+the next initcall starts; stretching the end of probe by ~15 ms makes
+the same kernel boot reliably; an enabled UNIPHY0 node is what arms
+the failure there. The armed configuration differs per board (on the
+GL-B3000 the failure persists with UNIPHY0 disabled), and so does the
+window: the same 15 ms stretch - or a 2 s one - still dies 8 of 8
+boots on the GL-B3000, so a delay is a diagnostic, not a workaround.
+Gating the same clocks on an idle, fully booted system is harmless.
+The window between the CMN PLL probe and the first reference taken by
+any consumer is exactly where the gate lands, so no consumer-side
+scheme can cover it.
 
 Take a devres-managed runtime PM reference in probe, so the bus clocks
 stay enabled for as long as the driver is bound and the reference is
 released again on unbind.
 
+Upstream submission (v4):
+https://lore.kernel.org/linux-clk/20260813093351.178419-1-kuncy7@gmail.com/
+
 Fixes: f81715a4c87c ("clk: qcom: Add CMN PLL clock controller driver for IPQ SoC")
 Signed-off-by: Stanislaw Pal <kuncy7@gmail.com>
 Tested-by: Georg Seema <georgseema@gmail.com>
 ---
- drivers/clk/qcom/ipq-cmn-pll.c | 10 ++++++++++
- 1 file changed, 10 insertions(+)
+ drivers/clk/qcom/ipq-cmn-pll.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
 
 --- a/drivers/clk/qcom/ipq-cmn-pll.c
 +++ b/drivers/clk/qcom/ipq-cmn-pll.c
-@@ -433,6 +433,16 @@ static int ipq_cmn_pll_clk_probe(struct
+@@ -433,6 +433,18 @@ static int ipq_cmn_pll_clk_probe(struct
  	if (ret)
  		return dev_err_probe(dev, ret, "Failed to add SYS clock\n");
  
 +	/*
-+	 * On IPQ5018 gating the CMN block AHB & SYS clocks after probe
-+	 * hangs the SoC within milliseconds, with no consumer of the PLL
-+	 * outputs active. Hold a reference for as long as the driver is
-+	 * bound so that the bus clocks stay enabled.
++	 * Gating the CMN block AHB & SYS clocks is only safe on an idle
++	 * system: without this reference the gate lands asynchronously a
++	 * few milliseconds after probe, in the middle of the early-boot
++	 * probe activity, and on IPQ5018 that races with other bus
++	 * traffic and hangs the SoC. Hold the reference for as long as
++	 * the driver is bound so that the bus clocks stay enabled.
 +	 */
 +	ret = devm_pm_runtime_get_noresume(dev);
 +	if (ret)
