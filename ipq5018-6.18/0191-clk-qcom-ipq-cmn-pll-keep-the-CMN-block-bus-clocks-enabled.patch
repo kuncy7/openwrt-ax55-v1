@@ -44,7 +44,6 @@ Tested-by: Georg Seema <georgseema@gmail.com>
  drivers/clk/qcom/ipq-cmn-pll.c | 12 ++++++++++++
  1 file changed, 12 insertions(+)
 
-
 --- a/drivers/clk/qcom/ipq-cmn-pll.c
 +++ b/drivers/clk/qcom/ipq-cmn-pll.c
 @@ -433,6 +433,18 @@ static int ipq_cmn_pll_clk_probe(struct
