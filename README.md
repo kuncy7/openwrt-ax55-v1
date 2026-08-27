@@ -214,4 +214,4 @@ upstream is by **George Moussalem** (OpenWrt PR #24556, and the mainline
 combo PCIe/USB3 rework). IPQ5332 TCSR mux register confirmation by
 **Dusknoir**, Flint 3 testing by **perceival** (forum 250267). No-serial root method from lmadarassy
 & the forum 158384 contributors. Port, USB3 mux-ordering root cause & hardware
-validation: Stanisław Pal (kuncy7).
+validation: kuncy7.
