@@ -75,21 +75,22 @@ the trunk itself. What remains out of tree lives in [`src/`](src/):
 |---|---|
 | `0001-…-wait-out-full-chip-reset.patch` | the reset bit clears long before the switch finishes bring-up; configuring too early loses register writes (cold-boot half-dead switch) |
 | `0002-…-let-the-serdes-pll-settle-after-dp-reset.patch` | ~98 ms SerDes PLL settle after the data-path reset, as the vendor firmware does (cold-boot TX-dead SGMII) |
-| `0003-usb-dwc3-qcom-select-tcsr-phy-mux-before-reset.patch` | **the USB3 SuperSpeed fix**: optional `qcom,phy-mux-regs` DT hook + the mux write as the *first* thing in probe, before the controller reset |
-| `0004-phy-qcom-add-ipq5018-usb-ss-phy.patch` | IPQ5018 USB SS uni PHY driver (faithful port of the vendor init sequence) |
-| `ipq5018-tplink-archer-ax55-v1.dts` | current board DTS (incl. the USB SS phy node and the mux register) |
+| `0003-usb-dwc3-qcom-select-tcsr-phy-mux-before-reset.patch` | *historical* — our first USB3 SuperSpeed fix (mux write before the controller reset). **Superseded**: USB3 is in OpenWrt main since PR #24556; do not apply these |
+| `0004-phy-qcom-add-ipq5018-usb-ss-phy.patch` | *historical* — our IPQ5018 USB SS uni PHY driver, likewise superseded by the upstream series |
+| `ipq5018-tplink-archer-ax55-v1.dts` | current board DTS |
 
 ## Status
 | Area | State |
 |---|---|
-| Boot to userspace (kernel 6.12) | ✅ |
+| Boot to userspace (kernel 6.18) | ✅ |
 | WAN + NAT + IPv4/IPv6 | ✅ |
 | 4×LAN (DSA) + labels | ✅ |
 | 2.5G HSGMII trunk (warm boot / short power-cycle) | ✅ |
 | WiFi 2.4 GHz + 5 GHz (ath11k, board-specific BDFs) | ✅ |
 | Factory MACs (label/wan/radios from `tp_data`) | ✅ |
 | USB 2.0 (HS) | ✅ |
-| USB 3.0 (SuperSpeed) | ✅ 5 Gbps, 112–116 MB/s sustained (patches `0003`+`0004`) |
+| USB 3.0 (SuperSpeed) | ✅ 5 Gbps (`speed=5000`), ~120 MB/s sustained on a USB 3.2 gen 1 stick (drive-limited). Driver is upstream now — see below |
+| USB port power switching (`vdd-supply`) | ✅ unbind/bind of `dwc3-qcom` power-cycles the 5 V rail |
 | Software flow offload | ✅ (`kmod-nft-offload`) |
 | Cold boot after hours powered off | ✅ (patches `0001`+`0002`) |
 
@@ -107,26 +108,47 @@ after the data-path reset (`0002`). Without the settle roughly 1 boot in 7 came
 up TX-dead; with both patches every boot has been clean. Diagnostics history:
 forum thread *"reduce number of drivers for rtl8367s"*.
 
-### Solved: USB3 SuperSpeed (mux ordering)
+### Solved: USB3 SuperSpeed (mux ordering) — now upstream
 The IPQ5018 USB SS pads are shared with PCIe through a TCSR mux, and TP-Link's
 U-Boot never touches USB, so the pads stay muxed away. Writing the mux *late* in
 probe is not enough — it must happen **before the controller reset**, or the SS
 link never leaves Rx.Detect while USB2 keeps working (HS does not go through the
-mux). Patch `0003` does exactly that; the PHY driver (`0004`) needs no board
-magic. The same TCSR register (`0x01947540`) was confirmed on IPQ5332
-(GL.iNet Flint 3, forum thread 250267) — there GL.iNet's bootloader happens to
-leave the mux right, which is why SS "just worked" on that board.
+mux). Our patches `0003`/`0004` did exactly that. They are **history now**: George
+Moussalem's IPQ5018 USB3 series was merged into OpenWrt main in
+[PR #24556](https://github.com/openwrt/openwrt/pull/24556), carrying the same
+ordering, so nothing out-of-tree is needed any more. The board DTS only has to
+enable the PHY and hand it the port's 5 V rail:
+
+```dts
+&usbphy1 {
+	status = "okay";
+	vdd-supply = <&reg_usb_vbus>;
+};
+```
+
+Upstream (kernel) has since asked for the SS PHY driver to be folded into the
+existing PCIe PHY as a **combo PCIe/USB3 driver**, because the SerDes is
+hardware-muxed between USB3 and PCIe1 — the two cannot be used at once. That
+rewrite was tested on this board (SuperSpeed on both sticks, cold boot and warm
+reboot with a stick inserted, no regression); expect it to replace the merged
+series in a later main. The same TCSR register (`0x01947540`) was confirmed on
+IPQ5332 (GL.iNet Flint 3, forum thread 250267) — there GL.iNet's bootloader
+happens to leave the mux right, which is why SS "just worked" on that board.
 
 ## Build
 ```sh
-# Base: openwrt/openwrt main (kernel 6.12) — it already carries PR #22381
-#       (UNIPHY-PCS + IPQ5018 DWMAC). No out-of-tree base patch is needed anymore.
+# Base: openwrt/openwrt main (kernel 6.18). It already carries everything this
+# board needs except the device itself: UNIPHY-PCS + IPQ5018 DWMAC (PR #22381),
+# the IPQ5018 USB3 series (PR #24556), the SPI-NAND SET_FEATURE fix, and our
+# CMN PLL bus-clock fix (merged as 86b584bd09 — without it the SoC hangs at the
+# CMN PLL probe on some boards).
 git clone https://github.com/openwrt/openwrt.git && cd openwrt
 
-# Drop in the cold-boot switch fixes (generic - any Realtek rtl8365mb board
-# benefits) and the USB3 patches:
-cp .../src/0001-*.patch .../src/0002-*.patch target/linux/generic/pending-6.12/
-cp .../src/0003-*.patch .../src/0004-*.patch target/linux/qualcommax/patches-6.12/
+# The only out-of-tree kernel patches left are the two cold-boot switch fixes
+# (generic — any Realtek rtl8365mb board benefits):
+cp .../src/0001-*.patch .../src/0002-*.patch target/linux/generic/pending-6.18/
+# NOTE: do NOT apply src/0003 and src/0004 — the USB3 work is in main now.
+
 # plus the device support (DTS, base-files, image recipe, ipq-wifi, BDFs) from PR #24197
 #   https://github.com/openwrt/openwrt/pull/24197  (or git fetch the branch)
 
@@ -134,8 +156,8 @@ cp .../src/0003-*.patch .../src/0004-*.patch target/linux/qualcommax/patches-6.1
 make menuconfig    # Target: qualcommax / ipq50xx / TP-Link Archer AX55 v1
 make -j$(nproc)
 ```
-For USB3 the DTS must also carry the SS phy node and
-`qcom,phy-mux-regs = <&tcsr 0x10540>;` in the usb node — the `src/` DTS has both.
+The SS PHY node and its mux register now live in `ipq5018.dtsi` upstream, so the
+board DTS only enables `&usbphy1` and gives it `vdd-supply` (see above).
 
 Artifacts: `...-initramfs-uImage.itb`, `...-squashfs-factory.ubi`,
 `...-squashfs-sysupgrade.bin` (attached to the GitHub **Release**).
@@ -187,7 +209,9 @@ and the RTL8367S SerDes/MDIO investigation).
 IPQ5018 DWMAC/UNIPHY-PCS base merged upstream (OpenWrt PR #22381). RTL8367S
 SGMII/HSGMII datapath by **Johan Alvarado** (netdev, merged). The 98 ms SerDes
 settle constant was pointed out by **Mieczysław Nalewaj** (vendor firmware
-disassembly). IPQ5332 TCSR mux register confirmation by **Dusknoir**, Flint 3
-testing by **perceival** (forum 250267). No-serial root method from lmadarassy
+disassembly). The IPQ5018 USB3 series that now carries this
+upstream is by **George Moussalem** (OpenWrt PR #24556, and the mainline
+combo PCIe/USB3 rework). IPQ5332 TCSR mux register confirmation by
+**Dusknoir**, Flint 3 testing by **perceival** (forum 250267). No-serial root method from lmadarassy
 & the forum 158384 contributors. Port, USB3 mux-ordering root cause & hardware
 validation: Stanisław Pal (kuncy7).
