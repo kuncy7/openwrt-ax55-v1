@@ -3,14 +3,50 @@
 OpenWrt port for the **TP-Link Archer AX55 v1** (Qualcomm IPQ5018), on the
 **mainline DWMAC + DSA** ethernet stack — no QSDK, no NSS, no SerDes firmware blob.
 
-- Upstream PR: **https://github.com/openwrt/openwrt/pull/24197** (draft)
+- Upstream PR: **https://github.com/openwrt/openwrt/pull/24197**
 - Forum thread: https://forum.openwrt.org/t/add-support-for-tp-link-ax55-v1/158384
 
 > ⚠️ **Board revision matters.** This targets **v1** with the **Realtek RTL8367S**
-> switch. Some v1 units ship an **RTL8367D** instead — *not supported yet* (mainline
-> `rtl8365mb` rejects it as "unrecognized switch"), so such a unit would boot with
-> Ethernet down and Wi-Fi disabled by default. **v2 is a different SoC entirely.**
-> Check your switch chip before flashing.
+> switch. Some v1 units ship an **RTL8367S-VB** (chip id `0x6642`, the RTL8367D
+> "family D") instead — *not supported yet* (mainline `rtl8365mb` rejects it as
+> "unrecognized switch"), so such a unit boots with Ethernet down. Wi-Fi is off in
+> a fresh OpenWrt config, so it ends up with **no network access at all**.
+> **v2 is a different SoC entirely.**
+
+### How to tell which switch you have — before flashing
+
+There is **no reliable way to tell from stock firmware.** In particular:
+
+> ❌ `/proc/driver/rtl8367s` exists on **both** families — the vendor driver
+> exposes the same node either way, and the chip is silkscreened "RTL8367S" on
+> both boards. Seeing that file is **not** confirmation that you have the
+> supported switch. Several people have been caught by this.
+
+What does work:
+
+1. **A serial boot log.** Reading is enough, and it needs no board
+   modification: TP-Link gaps the *RX* trace, but TX is intact, so an ordinary
+   3.3 V USB-UART reads the 1.8 V console fine at 115200 8N1 — wire only **GND
+   and the adapter's RX** to the board's TX, and do **not** connect the
+   adapter's TX. Hookup photo and a sample log:
+   [forum post #5](https://forum.openwrt.org/t/add-support-for-tp-link-ax55-v1/158384/5).
+   The `rtl8365mb` probe line names the chip:
+   - supported: `found an RTL8367S switch`
+   - family D: `unrecognized switch (id=0x6642, ver=0x0010)` + `error -ENODEV`
+2. **Known correlation, not a guarantee:** every family-D unit reported so far
+   has been an **RU-market device from early 2022** (`hw_id`
+   `629E4195F5EF9C38A7EF346815BA7A5B`, `special_id` `52550000`, U-Boot dated
+   June 2022). Three independent owners, identical IDs.
+
+If you flashed already and Ethernet is dead, that probe line in the boot log is
+the thing to check, and recovery to stock is the "hold Reset while powering on"
+path described below.
+
+**Family-D support is being written** by @namiltd in
+[namiltd/openwrt#134](https://github.com/namiltd/openwrt/pull/134); the working
+thread is
+[*reduce number of drivers for rtl8367s*](https://forum.openwrt.org/t/reduce-number-of-drivers-for-rtl8367s/237681).
+If you own one of these units, that thread is where test results are useful.
 
 ## Hardware
 - SoC: Qualcomm **IPQ5018** (dual Cortex-A53, 64-bit)
