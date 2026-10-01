@@ -3,7 +3,11 @@
 Zawartość katalogu:
 - `ax55-v1-openwrt-2512-full.patch` — jeden scalony patch, czysto
   tekstowy (bez sekcji binarnych); baza w
-  momencie eksportu: `ab08f6a524` na `openwrt-25.12`.
+  momencie eksportu: `6ad13aa729` na `openwrt-25.12` (2026-10-01,
+  kernel 6.12.108). Od 2026-09-30 `openwrt-25.12` ma własny backport
+  „PCS standalone" i nowsze API fwnode PCS, więc patch nie dowozi już
+  nic w `generic/`, `airoha/` ani `layerscape/` (28 plików zamiast 44)
+  i NIE nakłada się na drzewa sprzed `7bb083b6b4`.
 - `board-tplink_ax55v1.ipq5018`, `board-tplink_ax55v1.qcn6122` —
   binaria BDF (osobno, poza patchem).
 
